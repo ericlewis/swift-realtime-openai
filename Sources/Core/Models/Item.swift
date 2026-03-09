@@ -1,16 +1,14 @@
 import Foundation
-import MetaCodable
 
-@Codable @CodedAt("type") public enum Item: Identifiable, Equatable, Hashable, Sendable {
+public enum Item: Equatable, Hashable, Sendable {
 	public enum Status: String, Equatable, Hashable, Codable, Sendable {
-		case completed, incomplete, inProgress = "in_progress"
+		case completed
+		case incomplete
+		case inProgress = "in_progress"
 	}
 
 	public struct Audio: Equatable, Hashable, Codable, Sendable {
-		/// Audio bytes
 		public var audio: AudioData?
-
-		/// The transcript of the audio
 		public var transcript: String?
 
 		public init(audio: AudioData? = nil, transcript: String? = nil) {
@@ -19,368 +17,259 @@ import MetaCodable
 		}
 
 		public init(audio: Data? = nil, transcript: String? = nil) {
-			self.init(audio: audio.map { AudioData(data: $0) }, transcript: transcript)
+			self.init(audio: audio.map(AudioData.init(data:)), transcript: transcript)
 		}
 	}
 
-	public enum ContentPart: Equatable, Hashable, Sendable {
-		case text(String)
-		case audio(Audio)
-	}
-
-	public struct Message: Identifiable, Equatable, Hashable, Codable, Sendable {
+	public struct Message: Equatable, Hashable, Codable, Sendable {
 		public enum Role: String, Equatable, Hashable, Codable, Sendable {
-			case system, assistant, user
+			case user
+			case assistant
+			case system
+		}
+
+		public struct InputImage: Equatable, Hashable, Codable, Sendable {
+			public enum Detail: String, Equatable, Hashable, Codable, Sendable {
+				case auto
+				case low
+				case high
+				case original
+			}
+
+			public var detail: Detail?
+			public var imageUrl: String
+
+			public init(imageUrl: String, detail: Detail? = nil) {
+				self.detail = detail
+				self.imageUrl = imageUrl
+			}
 		}
 
 		public enum Content: Equatable, Hashable, Sendable {
-			case text(String)
-			case audio(Audio)
 			case inputText(String)
 			case inputAudio(Audio)
+			case inputImage(InputImage)
+			case outputText(String)
+			case outputAudio(Audio)
 
 			public var text: String? {
 				switch self {
-					case let .text(text): text
 					case let .inputText(text): text
-					case let .audio(audio): audio.transcript
 					case let .inputAudio(audio): audio.transcript
+					case let .inputImage(image): image.imageUrl
+					case let .outputText(text): text
+					case let .outputAudio(audio): audio.transcript
 				}
 			}
 		}
 
-		/// The unique ID of the item.
-		public var id: String
-
-		/// The status of the item. Has no effect on the conversation.
+		public var content: [Content]
+		public var id: String?
+		public var object: String?
+		public var role: Role
 		public var status: Status
 
-		/// The role of the message sender.
-		public var role: Role
-
-		/// The content of the message.
-		public var content: [Content]
-
-		public init(id: String, status: Status = .completed, role: Role, content: [Content]) {
+		public init(id: String? = nil, object: String? = nil, role: Role, status: Status = .completed, content: [Content]) {
+			self.content = content
 			self.id = id
+			self.object = object
 			self.role = role
 			self.status = status
-			self.content = content
 		}
 	}
 
-	/// A function call item in a Realtime conversation.
-	public struct FunctionCall: Identifiable, Equatable, Hashable, Codable, Sendable {
-		/// The unique ID of the item.
-		public var id: String
-
-		/// The status of the item. Has no effect on the conversation.
+	public struct FunctionCall: Equatable, Hashable, Codable, Sendable {
+		public var arguments: String
+		public var callId: String?
+		public var id: String?
+		public var name: String
+		public var object: String?
 		public var status: Status
 
-		/// The ID of the function call
-		public var callId: String
-
-		/// The name of the function being called
-		public var name: String
-
-		/// The arguments of the function call
-		public var arguments: String
-
-		/// Creates a new `FunctionCall` instance.
-		///
-		/// - Parameter id: The unique ID of the item.
-		/// - Parameter status: The status of the item. Has no effect on the conversation
-		/// - Parameter callId: The ID of the function call.
-		/// - Parameter name: The name of the function being called.
-		public init(id: String, status: Status, callId: String, name: String, arguments: String) {
+		public init(id: String? = nil, object: String? = nil, status: Status = .completed, callId: String? = nil, name: String, arguments: String) {
+			self.arguments = arguments
+			self.callId = callId
 			self.id = id
 			self.name = name
+			self.object = object
 			self.status = status
-			self.callId = callId
-			self.arguments = arguments
 		}
 	}
 
-	/// A function call output item in a Realtime conversation.
-	public struct FunctionCallOutput: Identifiable, Equatable, Hashable, Codable, Sendable {
-		/// The unique ID of the item.
-		public var id: String
-
-		/// The ID of the function call
+	public struct FunctionCallOutput: Equatable, Hashable, Codable, Sendable {
 		public var callId: String
-
-		/// The output of the function call
+		public var id: String?
+		public var object: String?
 		public var output: String
+		public var status: Status
 
-		/// Creates a new `FunctionCallOutput` instance.
-		///
-		/// - Parameter id: The unique ID of the item.
-		/// - Parameter callId: The ID of the function call.
-		/// - Parameter output: The output of the function call.
-		public init(id: String, callId: String, output: String) {
-			self.id = id
+		public init(id: String? = nil, object: String? = nil, status: Status = .completed, callId: String, output: String) {
 			self.callId = callId
+			self.id = id
+			self.object = object
 			self.output = output
+			self.status = status
 		}
 	}
 
-	/// A Realtime item representing an invocation of a tool on an MCP server.
-	@Codable public struct MCPToolCall: Identifiable, Equatable, Hashable, Sendable {
-		/// An error that occurred during the MCP call.
+	public struct MCPCall: Equatable, Hashable, Codable, Sendable {
 		public struct Error: Equatable, Hashable, Codable, Sendable {
 			public var code: Int?
-			public var type: String
 			public var message: String
+			public var type: String
 
-			/// Creates a new `Error` instance.
-			public init(code: Int? = nil, type: String, message: String) {
+			public init(code: Int? = nil, message: String, type: String) {
 				self.code = code
-				self.type = type
 				self.message = message
+				self.type = type
 			}
 		}
 
-		/// The unique ID of the tool call.
-		public var id: String
-
-		/// The label of the MCP server running the tool.
-		@CodedAt("server_label")
-		public var server: String
-
-		/// The name of the tool that was run.
-		@CodedAt("name")
-		public var tool: String
-
-		/// A JSON string of the arguments passed to the tool.
-		public var arguments: String
-
-		/// The output from the tool call.
-		public var output: String?
-
-		/// The error from the tool call, if any.
-		public var error: Error?
-
-		/// The ID of an associated approval request, if any.
 		public var approvalRequestId: String?
-
-		/// Creates a new `MCPToolCall` instance.
-		///
-		/// - Parameter id: The unique ID of the tool call.
-		/// - Parameter server: The label of the MCP server running the tool.
-		/// - Parameter tool: The name of the tool that was run.
-		/// - Parameter arguments: A JSON string of the arguments passed to the tool.
-		/// - Parameter output: The output from the tool call.
-		/// - Parameter error: The error from the tool call, if any.
-		/// - Parameter approvalRequestId: The ID of an associated approval request, if any.
-		public init(id: String, server: String, tool: String, arguments: String, output: String? = nil, error: Error? = nil, approvalRequestId: String? = nil) {
-			self.id = id
-			self.tool = tool
-			self.error = error
-			self.server = server
-			self.output = output
-			self.arguments = arguments
-			self.approvalRequestId = approvalRequestId
-		}
-	}
-
-	/// A Realtime item requesting human approval of a tool invocation.
-	@Codable public struct MCPApprovalRequest: Identifiable, Equatable, Hashable, Sendable {
-		/// The unique ID of the approval request.
-		public var id: String
-
-		/// The label of the MCP server making the request.
-		@CodedAt("server_label")
-		public var server: String
-
-		/// The name of the tool to run.
-		@CodedAt("name")
-		public var tool: String
-
-		/// A JSON string of arguments for the tool.
 		public var arguments: String
+		public var error: Error?
+		public var id: String
+		public var name: String
+		public var object: String?
+		public var output: String?
+		public var serverLabel: String
+		public var status: Status?
 
-		/// Creates a new `MCPApprovalRequest` instance.
-		///
-		/// - Parameter id: The unique ID of the approval request.
-		/// - Parameter server: The label of the MCP server making the request.
-		/// - Parameter tool: The name of the tool to run.
-		/// - Parameter arguments: A JSON string of arguments for the tool.
-		public init(id: String, server: String, tool: String, arguments: String) {
-			self.id = id
-			self.tool = tool
-			self.server = server
+		public init(
+			id: String,
+			object: String? = nil,
+			status: Status? = nil,
+			serverLabel: String,
+			name: String,
+			arguments: String,
+			output: String? = nil,
+			error: Error? = nil,
+			approvalRequestId: String? = nil
+		) {
+			self.approvalRequestId = approvalRequestId
 			self.arguments = arguments
+			self.error = error
+			self.id = id
+			self.name = name
+			self.object = object
+			self.output = output
+			self.serverLabel = serverLabel
+			self.status = status
 		}
 	}
 
-	/// A Realtime item responding to an MCP approval request.
-	@Codable public struct MCPApprovalResponse: Identifiable, Equatable, Hashable, Sendable {
-		/// The unique ID of the approval response.
+	public struct MCPApprovalRequest: Equatable, Hashable, Codable, Sendable {
+		public var arguments: String
 		public var id: String
+		public var name: String
+		public var object: String?
+		public var serverLabel: String
+		public var status: Status?
 
-		/// The ID of the approval request being answered.
-		public var approvalRequestId: String
-
-		/// Whether the request was approved.
-		public var approve: Bool
-
-		/// Optional reason for the decision.
-		public var reason: String?
-
-		/// Creates a new `MCPApprovalResponse` instance.
-		///
-		/// - Parameter id: The unique ID of the approval response.
-		/// - Parameter approvalRequestId: The ID of the approval request being answered.
-		/// - Parameter approve: Whether the request was approved.
-		/// - Parameter reason: Optional reason for the decision.
-		public init(id: String, approvalRequestId: String, approve: Bool, reason: String? = nil) {
+		public init(id: String, object: String? = nil, status: Status? = nil, serverLabel: String, name: String, arguments: String) {
+			self.arguments = arguments
 			self.id = id
+			self.name = name
+			self.object = object
+			self.serverLabel = serverLabel
+			self.status = status
+		}
+	}
+
+	public struct MCPApprovalResponse: Equatable, Hashable, Codable, Sendable {
+		public var approvalRequestId: String
+		public var approve: Bool
+		public var id: String
+		public var object: String?
+		public var reason: String?
+		public var status: Status?
+
+		public init(id: String, object: String? = nil, status: Status? = nil, approvalRequestId: String, approve: Bool, reason: String? = nil) {
 			self.approvalRequestId = approvalRequestId
 			self.approve = approve
+			self.id = id
+			self.object = object
 			self.reason = reason
+			self.status = status
 		}
 	}
 
-	@Codable public struct MCPListTools: Identifiable, Equatable, Hashable, Sendable {
+	public struct MCPListTools: Equatable, Hashable, Codable, Sendable {
 		public struct Tool: Equatable, Hashable, Codable, Sendable {
-			/// Additional annotations about the tool.
 			public struct Annotations: Equatable, Hashable, Codable, Sendable {
-				/// A human-readable title for the tool
+				public var destructiveHint: Bool?
+				public var idempotentHint: Bool?
+				public var openWorldHint: Bool?
+				public var readOnlyHint: Bool?
 				public var title: String?
 
-				/// If true, the tool may perform destructive updates to its environment.
-				/// If false, the tool performs only additive updates.
-				public var destructiveHint: Bool?
-
-				/// If true, calling the tool repeatedly with the same arguments will have no additional effect on its environment.
-				public var idempotentHint: Bool?
-
-				/// If true, this tool may interact with an "open world" of external
-				/// entities. If false, the tool's domain of interaction is closed.
-				/// For example, the world of a web search tool is open, whereas that
-				/// of a memory tool is not.
-				public var openWorldHint: Bool?
-
-				/// If true, the tool does not modify its environment.
-				public var readOnlyHint: Bool?
-
-				/// Creates a new set of annotations for a tool.
-				///
-				/// - Parameter title: A human-readable title for the tool.
-				/// - Parameter destructiveHint: If true, the tool may perform destructive updates to its environment.
-				/// - Parameter idempotentHint: If true, calling the tool repeatedly with the same arguments will have no additional effect on its environment.
-				/// - Parameter openWorldHint: If true, this tool may interact with an "open world" of external entities.
-				/// - Parameter readOnlyHint: If true, the tool does not modify its environment.
-				public init(title: String? = nil, destructiveHint: Bool? = nil, idempotentHint: Bool? = nil, openWorldHint: Bool? = nil, readOnlyHint: Bool? = nil) {
-					self.title = title
-					self.readOnlyHint = readOnlyHint
-					self.openWorldHint = openWorldHint
-					self.idempotentHint = idempotentHint
+				public init(
+					destructiveHint: Bool? = nil,
+					idempotentHint: Bool? = nil,
+					openWorldHint: Bool? = nil,
+					readOnlyHint: Bool? = nil,
+					title: String? = nil
+				) {
 					self.destructiveHint = destructiveHint
+					self.idempotentHint = idempotentHint
+					self.openWorldHint = openWorldHint
+					self.readOnlyHint = readOnlyHint
+					self.title = title
 				}
 			}
 
-			/// The name of the tool.
+			public var annotations: Annotations?
+			public var description: String?
+			public var inputSchema: JSONSchema
 			public var name: String
 
-			/// The description of the tool.
-			public var description: String?
-
-			/// The JSON schema describing the tool's input.
-			public var inputSchema: JSONSchema
-
-			/// Additional annotations about the tool.
-			public var annotations: Annotations?
-
-			/// Creates a new tool description.
-			///
-			/// - Parameter name: The name of the tool.
-			/// - Parameter description: The description of the tool.
-			/// - Parameter inputSchema: The JSON schema describing the tool's input.
-			/// - Parameter annotations: Additional annotations about the tool.
 			public init(name: String, description: String? = nil, inputSchema: JSONSchema, annotations: Annotations? = nil) {
-				self.name = name
+				self.annotations = annotations
 				self.description = description
 				self.inputSchema = inputSchema
-				self.annotations = annotations
+				self.name = name
 			}
 		}
 
-		/// The unique ID of the list.
-		public var id: String
-
-		/// The label of the MCP server.
-		@CodedAt("server_label")
-		public var server: String
-
-		/// The tools available on the server.
+		public var id: String?
+		public var object: String?
+		public var serverLabel: String
+		public var status: Status?
 		public var tools: [Tool]
+
+		public init(id: String? = nil, object: String? = nil, status: Status? = nil, serverLabel: String, tools: [Tool]) {
+			self.id = id
+			self.object = object
+			self.serverLabel = serverLabel
+			self.status = status
+			self.tools = tools
+		}
 	}
 
-	/// A message item in a Realtime conversation.
 	case message(Message)
-
-	/// A function call item in a Realtime conversation.
-	@CodedAs("function_call")
 	case functionCall(FunctionCall)
-
-	/// A function call output item in a Realtime conversation.
-	@CodedAs("function_call_output")
 	case functionCallOutput(FunctionCallOutput)
-
-	/// A Realtime item representing an invocation of a tool on an MCP server.
-	@CodedAs("mcp_tool_call")
-	case mcpToolCall(MCPToolCall)
-
-	/// A Realtime item requesting human approval of a tool invocation.
-	@CodedAs("mcp_approval_request")
+	case mcpCall(MCPCall)
 	case mcpApprovalRequest(MCPApprovalRequest)
-
-	/// A Realtime item responding to an MCP approval request.
-	@CodedAs("mcp_approval_response")
 	case mcpApprovalResponse(MCPApprovalResponse)
-
-	/// A Realtime item listing tools available on an MCP server.
-	@CodedAs("mcp_list_tools")
 	case mcpListTools(MCPListTools)
 
-	public var id: String {
+	public var id: String? {
 		switch self {
 			case let .message(message): message.id
-			case let .mcpToolCall(mcpToolCall): mcpToolCall.id
-			case let .mcpListTools(mcpListTools): mcpListTools.id
 			case let .functionCall(functionCall): functionCall.id
 			case let .functionCallOutput(functionCallOutput): functionCallOutput.id
-			case let .mcpApprovalRequest(mcpApprovalRequest): mcpApprovalRequest.id
-			case let .mcpApprovalResponse(mcpApprovalResponse): mcpApprovalResponse.id
+			case let .mcpCall(mcpCall): mcpCall.id
+			case let .mcpApprovalRequest(request): request.id
+			case let .mcpApprovalResponse(response): response.id
+			case let .mcpListTools(list): list.id
 		}
 	}
 }
 
-// MARK: Helpers
-
-public extension Item.Message.Content {
-	init(from part: Item.ContentPart) {
-		switch part {
-			case let .text(text): self = .text(text)
-			case let .audio(audio): self = .audio(audio)
-		}
-	}
-}
-
-// MARK: Codable implementations
-
-extension Item.ContentPart: Codable {
+extension Item: Codable {
 	private enum CodingKeys: String, CodingKey {
-		case type, text, audio, transcript
-	}
-
-	private struct Text: Codable {
-		let text: String
-
-		enum CodingKeys: CodingKey {
-			case text
-		}
+		case type
 	}
 
 	public init(from decoder: any Decoder) throws {
@@ -388,45 +277,62 @@ extension Item.ContentPart: Codable {
 		let type = try container.decode(String.self, forKey: .type)
 
 		switch type {
-			case "text":
-				let container = try decoder.container(keyedBy: Text.CodingKeys.self)
-				self = try .text(container.decode(String.self, forKey: .text))
-			case "audio":
-				self = try .audio(Item.Audio(from: decoder))
+			case "message":
+				self = .message(try Message(from: decoder))
+			case "function_call":
+				self = .functionCall(try FunctionCall(from: decoder))
+			case "function_call_output":
+				self = .functionCallOutput(try FunctionCallOutput(from: decoder))
+			case "mcp_call":
+				self = .mcpCall(try MCPCall(from: decoder))
+			case "mcp_approval_request":
+				self = .mcpApprovalRequest(try MCPApprovalRequest(from: decoder))
+			case "mcp_approval_response":
+				self = .mcpApprovalResponse(try MCPApprovalResponse(from: decoder))
+			case "mcp_list_tools":
+				self = .mcpListTools(try MCPListTools(from: decoder))
 			default:
-				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown content type: \(type)")
+				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown item type: \(type)")
 		}
 	}
 
-	public func encode(to encoder: Encoder) throws {
+	public func encode(to encoder: any Encoder) throws {
 		var container = encoder.container(keyedBy: CodingKeys.self)
 
 		switch self {
-			case let .text(text):
-				try container.encode(text, forKey: .text)
-				try container.encode("text", forKey: .type)
-			case let .audio(audio):
-				try container.encode("audio", forKey: .type)
-				try container.encode(audio.transcript, forKey: .transcript)
-				try container.encode(audio.audio, forKey: .audio)
+			case let .message(message):
+				try container.encode("message", forKey: .type)
+				try message.encode(to: encoder)
+			case let .functionCall(functionCall):
+				try container.encode("function_call", forKey: .type)
+				try functionCall.encode(to: encoder)
+			case let .functionCallOutput(functionCallOutput):
+				try container.encode("function_call_output", forKey: .type)
+				try functionCallOutput.encode(to: encoder)
+			case let .mcpCall(mcpCall):
+				try container.encode("mcp_call", forKey: .type)
+				try mcpCall.encode(to: encoder)
+			case let .mcpApprovalRequest(request):
+				try container.encode("mcp_approval_request", forKey: .type)
+				try request.encode(to: encoder)
+			case let .mcpApprovalResponse(response):
+				try container.encode("mcp_approval_response", forKey: .type)
+				try response.encode(to: encoder)
+			case let .mcpListTools(list):
+				try container.encode("mcp_list_tools", forKey: .type)
+				try list.encode(to: encoder)
 		}
 	}
 }
 
 extension Item.Message.Content: Codable {
 	private enum CodingKeys: String, CodingKey {
-		case type
-		case text
 		case audio
+		case detail
+		case imageUrl
+		case text
 		case transcript
-	}
-
-	private struct Text: Codable {
-		let text: String
-
-		enum CodingKeys: CodingKey {
-			case text
-		}
+		case type
 	}
 
 	public init(from decoder: any Decoder) throws {
@@ -434,39 +340,46 @@ extension Item.Message.Content: Codable {
 		let type = try container.decode(String.self, forKey: .type)
 
 		switch type {
-			case "text":
-				let container = try decoder.container(keyedBy: Text.CodingKeys.self)
-				self = try .text(container.decode(String.self, forKey: .text))
 			case "input_text":
-				let container = try decoder.container(keyedBy: Text.CodingKeys.self)
-				self = try .inputText(container.decode(String.self, forKey: .text))
-			case "output_audio":
-				self = try .audio(Item.Audio(from: decoder))
+				self = .inputText(try container.decode(String.self, forKey: .text))
 			case "input_audio":
-				self = try .inputAudio(Item.Audio(from: decoder))
+				self = .inputAudio(try Item.Audio(from: decoder))
+			case "input_image":
+				self = .inputImage(.init(
+					imageUrl: try container.decode(String.self, forKey: .imageUrl),
+					detail: try container.decodeIfPresent(Item.Message.InputImage.Detail.self, forKey: .detail)
+				))
+			case "output_text":
+				self = .outputText(try container.decode(String.self, forKey: .text))
+			case "output_audio":
+				self = .outputAudio(try Item.Audio(from: decoder))
 			default:
-				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown content type: \(type)")
+				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown message content type: \(type)")
 		}
 	}
 
-	public func encode(to encoder: Encoder) throws {
+	public func encode(to encoder: any Encoder) throws {
 		var container = encoder.container(keyedBy: CodingKeys.self)
 
 		switch self {
-			case let .text(text):
-				try container.encode(text, forKey: .text)
-				try container.encode("text", forKey: .type)
 			case let .inputText(text):
-				try container.encode(text, forKey: .text)
 				try container.encode("input_text", forKey: .type)
-			case let .audio(audio):
+				try container.encode(text, forKey: .text)
+			case let .inputAudio(audio):
+				try container.encode("input_audio", forKey: .type)
+				try container.encode(audio.audio, forKey: .audio)
+				try container.encodeIfPresent(audio.transcript, forKey: .transcript)
+			case let .inputImage(image):
+				try container.encode("input_image", forKey: .type)
+				try container.encode(image.imageUrl, forKey: .imageUrl)
+				try container.encodeIfPresent(image.detail, forKey: .detail)
+			case let .outputText(text):
+				try container.encode("output_text", forKey: .type)
+				try container.encode(text, forKey: .text)
+			case let .outputAudio(audio):
 				try container.encode("output_audio", forKey: .type)
 				try container.encode(audio.audio, forKey: .audio)
-				try container.encode(audio.transcript, forKey: .transcript)
-			case let .inputAudio(audio):
-				try container.encode(audio.audio, forKey: .audio)
-				try container.encode("input_audio", forKey: .type)
-				try container.encode(audio.transcript, forKey: .transcript)
+				try container.encodeIfPresent(audio.transcript, forKey: .transcript)
 		}
 	}
 }

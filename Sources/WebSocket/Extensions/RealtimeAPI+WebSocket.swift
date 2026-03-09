@@ -10,14 +10,15 @@ public extension RealtimeAPI {
 		RealtimeAPI(connector: WebSocketConnector(connectingTo: request))
 	}
 
-	/// Connect to the OpenAI WebSocket Realtime API with the given authentication token and model.
-	static func webSocket(authToken: String, model: Model = .gptRealtime) -> RealtimeAPI {
-		var request = URLRequest(url: URL(string: "wss://api.openai.com/v1/realtime")!.appending(queryItems: [
-			URLQueryItem(name: "model", value: model.rawValue),
-		]))
-		request.addValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
-		request.addValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+	/// Connect to the OpenAI WebSocket Realtime API with the given GA client secret.
+	static func webSocket(clientSecret: String) -> RealtimeAPI {
+		webSocket(connectingTo: .webSocketConnectionRequest(authToken: clientSecret))
+	}
 
-		return webSocket(connectingTo: request)
+	/// Connect to the OpenAI WebSocket Realtime API with the given authentication token.
+	///
+	/// Configure the session after connecting with `session.update`.
+	static func webSocket(authToken: String) -> RealtimeAPI {
+		webSocket(connectingTo: .webSocketConnectionRequest(authToken: authToken))
 	}
 }

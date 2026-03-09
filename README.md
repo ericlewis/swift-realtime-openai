@@ -1,201 +1,207 @@
-# A modern Swift SDK for OpenAI's Realtime API
+# RealtimeAPI
 
-[![Install Size](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fwww.emergetools.com%2Fapi%2Fv2%2Fpublic_new_build%3FexampleId%3Dswift-realtime-openai.OpenAIRealtime%26platform%3Dios%26badgeOption%3Dmax_install_size_only%26buildType%3Drelease&query=$.badgeMetadata&label=OpenAI&logo=apple)](https://www.emergetools.com/app/example/ios/swift-realtime-openai.OpenAIRealtime/release)
-[![Swift Version](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fm1guelpf%2Fswift-realtime-openai%2Fbadge%3Ftype%3Dswift-versions&color=brightgreen)](https://swiftpackageindex.com/m1guelpf/swift-realtime-openai)
-[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://raw.githubusercontent.com/m1guelpf/swift-realtime-openai/main/LICENSE)
-
-This library provides a simple interface for implementing multi-modal conversations using OpenAI's new Realtime API.
-
-It can handle automatically recording the user's microphone and playing back the assistant's response, and also gives you a transparent layer over the API for advanced use cases.
+A Swift SDK for OpenAI's GA Realtime API, with both a low-level event surface and a higher-level `Conversation` wrapper for speech and multimodal sessions.
 
 ## Installation
 
-### Swift Package Manager
-
-The Swift Package Manager allows for developers to easily integrate packages into their Xcode projects and packages; and is also fully integrated into the swift compiler.
-
-### SPM Through XCode Project
-
--   File > Swift Packages > Add Package Dependency
--   Add https://github.com/m1guelpf/swift-realtime-openai.git
--   Select "Branch" with "main"
-
-### SPM Through Xcode Package
-
-Once you have your Swift package set up, add the Git link within the dependencies value of your Package.swift file.
+Add the package in Xcode or SwiftPM:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/m1guelpf/swift-realtime-openai.git", .branch("main"))
+	.package(url: "https://github.com/m1guelpf/swift-realtime-openai.git", branch: "main")
 ]
 ```
 
-## Getting started 🚀
+## Quick Start
 
-You can build an iMessage-like app with built-in AI chat in less than 60 lines of code (UI included!):
+### High-level conversation API
+
+Create a GA client secret on your server with `POST /v1/realtime/client_secrets`, then connect with `Conversation.connect(clientSecret:)`.
+
+You can mint that secret directly with the SDK:
 
 ```swift
-import SwiftUI
 import RealtimeAPI
 
-struct ContentView: View {
-	@State private var newMessage: String = ""
-	@State private var conversation = try! Conversation()
+let clientSecret = try await RealtimeAPI.createClientSecret(
+	apiKey: "<server-api-key>",
+	session: .realtime(.init(
+		model: .gptRealtime,
+		instructions: "You are a friendly assistant."
+	)),
+	expiresAfter: .init(seconds: 600)
+)
+```
 
-	var messages: [Item.Message] {
-		conversation.entries.compactMap { switch $0 {
-			case let .message(message): return message
-			default: return nil
-		} }
-	}
+```swift
+import RealtimeAPI
+import SwiftUI
+
+struct ContentView: View {
+	@State private var conversation = Conversation()
+	@State private var draft = ""
 
 	var body: some View {
-		VStack(spacing: 0) {
+		VStack {
 			ScrollView {
-                VStack(spacing: 12) {
-                    ForEach(messages, id: \.id) { message in
-                        MessageBubble(message: message)
-                    }
-                }
-                .padding()
-			}
-
-			HStack(spacing: 12) {
-				HStack {
-					TextField("Chat", text: $newMessage, onCommit: { sendMessage() })
-						.frame(height: 40)
-						.submitLabel(.send)
-
-					if newMessage != "" {
-						Button(action: sendMessage) {
-							Image(systemName: "arrow.up.circle.fill")
-								.resizable()
-								.aspectRatio(contentMode: .fill)
-								.frame(width: 28, height: 28)
-								.foregroundStyle(.white, .blue)
-						}
+				LazyVStack(alignment: .leading, spacing: 12) {
+					ForEach(conversation.messages, id: \.id) { message in
+						Text(message.content.compactMap(\.text).joined(separator: "\n"))
 					}
 				}
-				.padding(.leading)
-				.padding(.trailing, 6)
-				.overlay(RoundedRectangle(cornerRadius: 20).stroke(.quaternary, lineWidth: 1))
+				.padding()
+			}
+
+			HStack {
+				TextField("Message", text: $draft)
+				Button("Send", action: sendMessage)
 			}
 			.padding()
 		}
-		.navigationTitle("Chat")
-		.navigationBarTitleDisplayMode(.inline)
-		.task { try! await conversation..connect(ephemeralKey: YOUR_EPHEMERAL_KEY_HERE) }
-	}
-
-	func sendMessage() {
-		guard newMessage != "" else { return }
-
-		Task {
-			try await conversation.send(from: .user, text: newMessage)
-			newMessage = ""
+		.task {
+			do {
+				try await conversation.connect(clientSecret: "<client-secret>")
+			} catch {
+				print("Realtime connect failed:", error)
+			}
 		}
 	}
-}
-```
 
-Or, if you just want a simple app that lets the user talk and the AI respond:
-
-```swift
-import SwiftUI
-import RealtimeAPI
-
-struct ContentView: View {
-	@State private var conversation = try! Conversation()
-
-	var body: some View {
-		Text("Say something!")
-			.task { try! await conversation..connect(ephemeralKey: YOUR_EPHEMERAL_KEY_HERE) }
+	private func sendMessage() {
+		guard !draft.isEmpty else { return }
+		try? conversation.send(from: .user, text: draft)
+		draft = ""
 	}
 }
 ```
 
+### Session configuration
 
-## Architecture
-
-### `Conversation`
-
-The `Conversation` class provides a high-level interface for managing a conversation with the model. It wraps the `RealtimeAPI` class and handles the details of sending and receiving messages, managing the conversation history, recording the user's mic, and playing model responses as they stream in.
-
-#### Reading messages
-
-You can access the messages in the conversation through the `messages` property. Note that this won't include function calls and its responses, only the messages between the user and the model. To access the full conversation history, use the `entries` property. For example:
-
-```swift
-ScrollView {
-    ScrollViewReader { scrollView in
-        VStack(spacing: 12) {
-            ForEach(conversation.messages, id: \.id) { message in
-                MessageBubble(message: message).id(message.id)
-            }
-        }
-        .onReceive(conversation.messages.publisher) { _ in
-            withAnimation { scrollView.scrollTo(conversation.messages.last?.id, anchor: .center) }
-        }
-    }
-}
-```
-
-#### Customizing the session
-
-You can customize the current session using the `setSession(_: Session)` or `updateSession(withChanges: (inout Session) -> Void)` methods. Note that they requires that a session has already been established, so it's recommended you call them from a `whenConnected(_: @Sendable () async throws -> Void)` callback or await `waitForConnection()` first. For example:
+`Conversation` is GA-first and works with `Session.Realtime`.
 
 ```swift
 try await conversation.whenConnected {
-    try await conversation.updateSession { session in
-        // update system prompt
-        session.instructions = "You are a helpful assistant."
-
-        // enable transcription of users' voice messages
-        session.inputAudioTranscription = Session.InputAudioTranscription()
-
-        // ...
-    }
+	try conversation.updateSession { session in
+		session.instructions = "You are a concise assistant."
+		session.outputModalities = [.audio]
+		session.audio = .init(
+			output: .init(voice: .marin)
+		)
+	}
 }
 ```
 
-#### Manually sending messages
+### Direct WebRTC connection
 
-To send a text message, call the `send(from: Item.ItemRole, text: String, response: Response.Config? = nil)` providing the role of the sender (`.user`, `.assistant`, or `.system`) and the contents of the message. You can optionally also provide a `Response.Config` object to customize the response, such as enabling or disabling function calls.
-
-To manually send an audio message (or part of one), call the `send(audioDelta: Data, commit: Bool = false)` with a valid audio chunk. If `commit` is `true`, the model will consider the message finished and begin responding to it. Otherwise, it might wait for more audio depending on your `Session.turnDetection` settings.
-
-#### Manually sending events
-
-To manually send an event to the API, use the `send(event: RealtimeAPI.ClientEvent)` method. Note that this bypasses some of the logic in the `Conversation` class such as handling interrupts, so you should prefer to use other methods whenever possible.
-
-### `RealtimeAPI`
-
-To interact with the API directly, create a new instance of `RealtimeAPI` providing one of the available connectors. There are helper methods that let you create an instance from an apiKey or a `URLRequest`, like so:
+Use the GA client-secret flow when connecting directly to WebRTC:
 
 ```swift
-let api = RealtimeAPI.webRTC(ephemeralKey: YOUR_EPHEMERAL_KEY, model: .gptRealtime) // or RealtimeAPI.webRTC(connectingTo: URLRequest)
-let api = RealtimeAPI.webSocket(authToken: YOUR_OPENAI_API_KEY, model: .gptRealtime) // or RealtimeAPI.webSocket(connectingTo: URLRequest)
+import RealtimeAPI
+
+let api = try await RealtimeAPI.webRTC(clientSecret: "<client-secret>")
 ```
 
-You can listen for new events through the `events` property, like so:
+### Direct WebSocket connection
+
+The WebSocket helpers support the unified GA flow with either a client secret or a bearer token:
 
 ```swift
+import RealtimeAPI
+
+let api = RealtimeAPI.webSocket(clientSecret: "<client-secret>")
+let serverSideAPI = RealtimeAPI.webSocket(authToken: "<api-key>")
+```
+
+Send GA-shaped events through the low-level API:
+
+```swift
+try await api.send(event: .updateSession(.realtime(.init(
+	model: .gptRealtime,
+	instructions: "Be helpful.",
+	audio: .init(output: .init(voice: .marin))
+))))
+
 for try await event in api.events {
-    switch event {
-        case let .sessionCreated(event):
-            print(event.session.id)
-    }
+	switch event {
+		case let .responseOutputTextDelta(_, _, _, _, _, delta):
+			print(delta)
+		case let .responseOutputAudioTranscriptDelta(_, _, _, _, _, delta):
+			print(delta)
+		default:
+			break
+	}
 }
 ```
 
-To send an event to the API, call the `send` method with a `ClientEvent` instance:
+## Key Types
+
+### `Session`
+
+`Session` is a tagged GA union:
+
+- `Session.realtime(Session.Realtime)`
+- `Session.transcription(Session.Transcription)`
+
+Realtime session fields follow the GA wire shape:
+
+- `audio.input`
+- `audio.output`
+- `outputModalities`
+- `maxOutputTokens`
+- `include`
+- `tracing`
+- `truncation`
+
+### `Response.Config`
+
+`Response.Config` matches GA `response.create` payloads, including:
+
+- nested audio config
+- `conversation`
+- `metadata`
+- `outputModalities`
+- `toolChoice`
+- `tools`
+- `input: [Response.InputItem]`
+
+For out-of-band responses, use `Response.InputItem.itemReference(id:)`:
 
 ```swift
-try await api.send(event: .updateSession(session))
-try await api.send(event: .appendInputAudioBuffer(encoding: audioData))
-try await api.send(event: .createResponse())
+let response = Response.Config(
+	conversation: .none,
+	outputModalities: [.text],
+	input: [
+		.itemReference(id: "item_12345"),
+		.message(.init(
+			id: "msg_123",
+			role: .user,
+			content: [.inputText("Summarize the above message in one sentence.")]
+		)),
+	]
+)
 ```
+
+### `Item`
+
+Assistant message content uses the GA discriminators:
+
+- `Item.Message.Content.outputText`
+- `Item.Message.Content.outputAudio`
+
+MCP call items also use GA naming:
+
+- `Item.mcpCall`
+
+## Testing
+
+The package includes GA protocol fixture tests for:
+
+- client event encoding
+- server event decoding
+- conversation upsert behavior for `conversation.item.added` / `.done`
+- streamed `output_text` and `output_audio_transcript` handling
+- automatic tool dispatch for completed function calls
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).

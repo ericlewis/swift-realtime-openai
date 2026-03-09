@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 
 import PackageDescription
 
@@ -16,16 +16,21 @@ let package = Package(
 	],
 	dependencies: [
 		.package(url: "https://github.com/livekit/webrtc-xcframework.git", branch: "main"),
-		.package(url: "https://github.com/SwiftyLab/MetaCodable.git", .upToNextMajor(from: "1.0.0")),
+		.package(url: "https://github.com/apple/swift-testing.git", from: "6.2.4"),
 	],
 	targets: [
-		.target(name: "Core", dependencies: [
-			.product(name: "MetaCodable", package: "MetaCodable"),
-			.product(name: "HelperCoders", package: "MetaCodable"),
-		]),
+		.target(name: "Core"),
 		.target(name: "WebSocket", dependencies: ["Core"]),
 		.target(name: "UI", dependencies: ["Core", "WebRTC"]),
 		.target(name: "RealtimeAPI", dependencies: ["Core", "WebSocket", "WebRTC", "UI"]),
 		.target(name: "WebRTC", dependencies: ["Core", .product(name: "LiveKitWebRTC", package: "webrtc-xcframework")]),
+		.testTarget(
+			name: "RealtimeAPITests",
+			dependencies: [
+				"Core",
+				"UI",
+				.product(name: "Testing", package: "swift-testing"),
+			]
+		),
 	]
 )

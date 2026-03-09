@@ -10,8 +10,22 @@ public extension RealtimeAPI {
 		try RealtimeAPI(connector: await WebRTCConnector.create(connectingTo: request))
 	}
 
-	/// Connect to the OpenAI WebRTC Realtime API with the given authentication token and model.
-	static func webRTC(ephemeralKey: String, model: Model = .gptRealtime) async throws -> RealtimeAPI {
-		return try await webRTC(connectingTo: .webRTCConnectionRequest(ephemeralKey: ephemeralKey, model: model))
+	/// Connect to the OpenAI WebRTC Realtime API with the given GA client secret.
+	static func webRTC(clientSecret: String) async throws -> RealtimeAPI {
+		try await webRTC(connectingTo: .webRTCConnectionRequest(clientSecret: clientSecret))
+	}
+
+	/// Connect to the OpenAI WebRTC Realtime API with the given GA client secret object.
+	static func webRTC(clientSecret: RealtimeClientSecret) async throws -> RealtimeAPI {
+		try await webRTC(clientSecret: clientSecret.value)
+	}
+
+	/// Connect to the OpenAI WebRTC Realtime API using the unified interface.
+	///
+	/// This flow uses a standard API key (not an ephemeral key) and sends the session configuration
+	/// alongside the SDP offer as multipart form data. Use this when your app server authenticates
+	/// directly with the OpenAI API.
+	static func webRTC(apiKey: String, session: Session) async throws -> RealtimeAPI {
+		try RealtimeAPI(connector: await WebRTCConnector.create(connectingTo: .webRTCCallRequest(apiKey: apiKey), session: session))
 	}
 }

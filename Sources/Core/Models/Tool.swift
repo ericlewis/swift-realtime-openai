@@ -1,171 +1,245 @@
 import Foundation
-import MetaCodable
 
-@Codable @CodedAt("type") public enum Tool: Equatable, Hashable, Sendable {
+// MARK: - RealtimeTool Protocol
+
+public protocol RealtimeTool<Arguments>: Sendable {
+	associatedtype Arguments: Decodable & Sendable
+
+	var name: String { get }
+	var description: String { get }
+	var parametersSchema: JSONSchema { get }
+
+	func call(arguments: Arguments) async throws -> String
+}
+
+public extension RealtimeTool {
+	var definition: Tool {
+		.function(.init(name: name, description: description, parameters: parametersSchema))
+	}
+}
+
+// MARK: - ToolRegistry
+
+public struct ToolRegistry: Sendable {
+	public enum Error: Swift.Error {
+		case unknownTool(String)
+		case invalidArguments(String, underlying: Swift.Error)
+	}
+
+	private let handlers: [String: @Sendable (String) async throws -> String]
+
+	public let definitions: [Tool]
+
+	public init(_ tools: [any RealtimeTool]) {
+		var handlers = [String: @Sendable (String) async throws -> String]()
+		var definitions = [Tool]()
+
+		for tool in tools {
+			definitions.append(tool.definition)
+			Self.register(tool, into: &handlers)
+		}
+
+		self.handlers = handlers
+		self.definitions = definitions
+	}
+
+	public func handle(name: String, callId: String, arguments: String) async throws -> Item.FunctionCallOutput {
+		guard let handler = handlers[name] else {
+			throw Error.unknownTool(name)
+		}
+
+		let output = try await handler(arguments)
+		return Item.FunctionCallOutput(id: UUID().uuidString, callId: callId, output: output)
+	}
+
+	private static func register<T: RealtimeTool>(_ tool: T, into handlers: inout [String: @Sendable (String) async throws -> String]) {
+		handlers[tool.name] = { arguments in
+			let data = Data(arguments.utf8)
+			let decoded: T.Arguments
+			do {
+				decoded = try JSONDecoder().decode(T.Arguments.self, from: data)
+			} catch {
+				throw Error.invalidArguments(tool.name, underlying: error)
+			}
+			return try await tool.call(arguments: decoded)
+		}
+	}
+}
+
+// MARK: - Tool
+
+public enum Tool: Equatable, Hashable, Sendable {
 	public enum Choice: Equatable, Hashable, Sendable {
-		/// The model will not call any tool and instead generates a message.
 		case none
-
-		/// The model can pick between generating a message or calling one or more tools.
 		case auto
-
-		/// The model must call one or more tools.
 		case required
-
-		/// Force the model to call a specific function.
-		///
-		/// - Parameter name: The name of the function to call.
 		case function(name: String)
-
-		/// Force the model to call a specific tool on a remote MCP server.
-		///
-		/// - Parameter server: The label of the MCP server to use.
-		/// - Parameter tool: The name of the tool to call on the server.
 		case mcp(server: String, tool: String?)
 	}
 
 	public struct Function: Equatable, Hashable, Codable, Sendable {
-		/// The name of the function.
 		public var name: String
-
-		/// The description of the function, including guidance on when and how to call it, and guidance about what to tell the user when calling it (if anything).
 		public var description: String?
-
-		/// A JSON schema object describing the parameters of the function.
 		public var parameters: JSONSchema
 
 		public init(name: String, description: String? = nil, parameters: JSONSchema) {
 			self.name = name
-			self.parameters = parameters
 			self.description = description
+			self.parameters = parameters
 		}
 	}
 
-	@Codable public struct MCP: Equatable, Hashable, Sendable {
+	public struct MCP: Equatable, Hashable, Codable, Sendable {
 		public enum Connector: String, Equatable, Hashable, Codable, Sendable {
-			case gmail = "connector_gmail"
 			case dropbox = "connector_dropbox"
-			case sharepoint = "connector_sharepoint"
-			case googleDrive = "connector_googledrive"
-			case outlookEmail = "connector_outlookemail"
+			case gmail = "connector_gmail"
 			case googleCalendar = "connector_googlecalendar"
+			case googleDrive = "connector_googledrive"
 			case microsoftTeams = "connector_microsoftteams"
 			case outlookCalendar = "connector_outlookcalendar"
+			case outlookEmail = "connector_outlookemail"
+			case sharepoint = "connector_sharepoint"
+		}
+
+		public struct Filter: Equatable, Hashable, Codable, Sendable {
+			public var readOnly: Bool?
+			public var toolNames: [String]?
+
+			public init(readOnly: Bool? = nil, toolNames: [String]? = nil) {
+				self.readOnly = readOnly
+				self.toolNames = toolNames
+			}
+		}
+
+		public enum AllowedTools: Equatable, Hashable, Sendable {
+			case names([String])
+			case filter(Filter)
 		}
 
 		public enum RequireApproval: Equatable, Hashable, Sendable {
-			/// Approval policies for MCP tools.
-			public enum Approval: String, CaseIterable, Equatable, Hashable, Codable, Sendable {
+			public enum Setting: String, CaseIterable, Equatable, Hashable, Codable, Sendable {
 				case always
 				case never
 			}
 
-			/// Specify a single approval policy for all tools
-			case all(Approval)
+			public struct Rules: Equatable, Hashable, Codable, Sendable {
+				public var always: Filter?
+				public var never: Filter?
 
-			/// Set approval requirements for specific tools on this MCP server.
-			///
-			/// - Parameter always: Tools that always require approval.
-			/// - Parameter never: Tools that never require approval.
-			case granular(always: [String]? = nil, never: [String]? = nil)
+				public init(always: Filter? = nil, never: Filter? = nil) {
+					self.always = always
+					self.never = never
+				}
+			}
+
+			case setting(Setting)
+			case rules(Rules)
 		}
 
-		/// A label for this MCP server, used to identify it in tool calls.
-		@CodedAt("server_label") public var label: String
+		private enum CodingKeys: String, CodingKey {
+			case serverLabel
+			case serverUrl
+			case connectorId
+			case authorization
+			case allowedTools
+			case deferLoading
+			case headers
+			case requireApproval
+			case serverDescription
+		}
 
-		/// The URL for the MCP server.
-		@CodedAt("server_url") public var url: URL?
-
-		/// Identifier for service connectors, like those available in ChatGPT.
-		///
-		/// Learn more about service connectors [here](https://platform.openai.com/docs/guides/tools-remote-mcp#connectors).
-		@CodedAt("connector_id") public var connector: Connector?
-
-		/// An OAuth access token that can be used with a remote MCP server, either with a custom MCP server URL or a service connector.
-		///
-		/// Your application must handle the OAuth authorization flow and provide the token here.
+		public var serverLabel: String
+		public var serverUrl: URL?
+		public var connectorId: Connector?
 		public var authorization: String?
-
-		/// List of allowed tool names.
-		public var allowedTools: [String]?
-
-		/// Optional HTTP headers to send to the MCP server.
-		///
-		/// Use for authentication or other purposes.
+		public var allowedTools: AllowedTools?
+		public var deferLoading: Bool?
 		public var headers: [String: String]?
-
-		/// Specify which of the MCP server's tools require approval.
 		public var requireApproval: RequireApproval?
+		public var serverDescription: String?
 
-		/// Optional description of the MCP server, used to provide more context.
-		@CodedAt("server_description") public var description: String?
-
-		/// Create a new `MCP` instance for a remote MCP server.
-		///
-		/// - Parameter label: A label for this MCP server, used to identify it in tool calls.
-		/// - Parameter url: The URL for the MCP server.
-		/// - Parameter authorization: An OAuth access token that can be used with a remote MCP server.
-		/// - Parameter allowedTools: List of allowed tool names.
-		/// - Parameter headers: Optional HTTP headers to send to the MCP server.
-		/// - Parameter requireApproval: Specify which of the MCP server's tools require approval.
-		/// - Parameter description: Optional description of the MCP server, used to provide more context.
-		public init(label: String, url: URL, authorization: String? = nil, allowedTools: [String]? = nil, headers: [String: String]? = nil, requireApproval: RequireApproval? = nil, description: String? = nil) {
-			self.url = url
-			self.label = label
-			self.headers = headers
-			self.description = description
-			self.allowedTools = allowedTools
+		public init(
+			serverLabel: String,
+			serverUrl: URL? = nil,
+			connectorId: Connector? = nil,
+			authorization: String? = nil,
+			allowedTools: AllowedTools? = nil,
+			deferLoading: Bool? = nil,
+			headers: [String: String]? = nil,
+			requireApproval: RequireApproval? = nil,
+			serverDescription: String? = nil
+		) {
+			self.serverLabel = serverLabel
+			self.serverUrl = serverUrl
+			self.connectorId = connectorId
 			self.authorization = authorization
-			self.requireApproval = requireApproval
-		}
-
-		/// Create a new `MCP` instance for a service connector.
-		///
-		/// - Parameter label: A label for this MCP server, used to identify it in tool calls.
-		/// - Parameter connector: Identifier for service connectors, like those available in ChatGPT.
-		/// - Parameter authorization: An OAuth access token that can be used with the connector.
-		/// - Parameter allowedTools: List of allowed tool names.
-		/// - Parameter headers: Optional HTTP headers to send to the MCP server.
-		/// - Parameter requireApproval: Specify which of the MCP server's tools require approval.
-		/// - Parameter description: Optional description of the MCP server, used to provide more context.
-		public init(label: String, connector: Connector, authorization: String, allowedTools: [String]? = nil, headers: [String: String]? = nil, requireApproval: RequireApproval? = nil, description: String? = nil) {
-			self.label = label
-			self.headers = headers
-			self.connector = connector
-			self.description = description
 			self.allowedTools = allowedTools
-			self.authorization = authorization
+			self.deferLoading = deferLoading
+			self.headers = headers
 			self.requireApproval = requireApproval
+			self.serverDescription = serverDescription
 		}
 	}
 
-	case mcp(MCP)
 	case function(Function)
+	case mcp(MCP)
+}
+
+extension Tool: Codable {
+	private enum CodingKeys: String, CodingKey {
+		case type
+	}
+
+	public init(from decoder: any Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		let type = try container.decode(String.self, forKey: .type)
+
+		switch type {
+			case "function":
+				self = .function(try Function(from: decoder))
+			case "mcp":
+				self = .mcp(try MCP(from: decoder))
+			default:
+				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown tool type: \(type)")
+		}
+	}
+
+	public func encode(to encoder: any Encoder) throws {
+		var container = encoder.container(keyedBy: CodingKeys.self)
+
+		switch self {
+			case let .function(function):
+				try container.encode("function", forKey: .type)
+				try function.encode(to: encoder)
+			case let .mcp(mcp):
+				try container.encode("mcp", forKey: .type)
+				try mcp.encode(to: encoder)
+		}
+	}
 }
 
 extension Tool.Choice: Codable {
-	enum CodingKeys: String, CodingKey {
-		case type
-		case name
-		case mode
-		case tools
-		case serverLabel = "server_label"
+	private enum CodingKeys: String, CodingKey {
+		case type, name, serverLabel
 	}
 
 	public func encode(to encoder: any Encoder) throws {
 		switch self {
-			case .none: try "none".encode(to: encoder)
-			case .auto: try "auto".encode(to: encoder)
-			case .required: try "required".encode(to: encoder)
+			case .none:
+				try "none".encode(to: encoder)
+			case .auto:
+				try "auto".encode(to: encoder)
+			case .required:
+				try "required".encode(to: encoder)
 			case let .function(name):
 				var container = encoder.container(keyedBy: CodingKeys.self)
 				try container.encode("function", forKey: .type)
 				try container.encode(name, forKey: .name)
-			case let .mcp(server, name):
+			case let .mcp(server, tool):
 				var container = encoder.container(keyedBy: CodingKeys.self)
 				try container.encode("mcp", forKey: .type)
 				try container.encode(server, forKey: .serverLabel)
-				if let name { try container.encode(name, forKey: .name) }
+				try container.encodeIfPresent(tool, forKey: .name)
 		}
 	}
 
@@ -175,7 +249,8 @@ extension Tool.Choice: Codable {
 				case "none": self = .none
 				case "auto": self = .auto
 				case "required": self = .required
-				default: throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Invalid tool choice: \(string)"))
+				default:
+					throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid tool choice: \(string)"))
 			}
 			return
 		}
@@ -185,56 +260,54 @@ extension Tool.Choice: Codable {
 
 		switch type {
 			case "function":
-				let name = try container.decode(String.self, forKey: .name)
-				self = .function(name: name)
+				self = .function(name: try container.decode(String.self, forKey: .name))
 			case "mcp":
-				let server = try container.decode(String.self, forKey: .serverLabel)
-				let tool = try container.decodeIfPresent(String.self, forKey: .name)
-				self = .mcp(server: server, tool: tool)
+				self = .mcp(
+					server: try container.decode(String.self, forKey: .serverLabel),
+					tool: try container.decodeIfPresent(String.self, forKey: .name)
+				)
 			default:
 				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Invalid tool choice: \(type)")
 		}
 	}
 }
 
-extension Tool.MCP.RequireApproval: Codable {
-	static let never = Self.all(.never)
-	static let always = Self.all(.always)
-
-	private enum CodingKeys: String, CodingKey {
-		case always, never
-	}
-
-	private struct ToolList: Codable {
-		var tool_names: [String]
-	}
-
+extension Tool.MCP.AllowedTools: Codable {
 	public func encode(to encoder: any Encoder) throws {
 		switch self {
-			case let .all(approval):
-				var container = encoder.singleValueContainer()
-				try container.encode(approval.rawValue)
-			case let .granular(always, never):
-				var container = encoder.container(keyedBy: CodingKeys.self)
-				if let always {
-					try container.encode(ToolList(tool_names: always), forKey: .always)
-				}
-				if let never {
-					try container.encode(ToolList(tool_names: never), forKey: .never)
-				}
+			case let .names(names):
+				try names.encode(to: encoder)
+			case let .filter(filter):
+				try filter.encode(to: encoder)
 		}
 	}
 
 	public init(from decoder: any Decoder) throws {
-		if let approval = try? Approval(from: decoder) {
-			self = .all(approval)
+		if let names = try? [String](from: decoder) {
+			self = .names(names)
 			return
 		}
 
-		let container = try decoder.container(keyedBy: CodingKeys.self)
-		self = try .granular(
-			always: container.decode(ToolList?.self, forKey: .always)?.tool_names,
-			never: container.decode(ToolList?.self, forKey: .never)?.tool_names
-		)
+		self = .filter(try Tool.MCP.Filter(from: decoder))
+	}
+}
+
+extension Tool.MCP.RequireApproval: Codable {
+	public func encode(to encoder: any Encoder) throws {
+		switch self {
+			case let .setting(setting):
+				try setting.encode(to: encoder)
+			case let .rules(rules):
+				try rules.encode(to: encoder)
+		}
+	}
+
+	public init(from decoder: any Decoder) throws {
+		if let setting = try? Setting(from: decoder) {
+			self = .setting(setting)
+			return
+		}
+
+		self = .rules(try Rules(from: decoder))
 	}
 }
