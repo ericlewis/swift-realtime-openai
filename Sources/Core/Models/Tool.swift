@@ -1,20 +1,27 @@
 import Foundation
 
-// MARK: - RealtimeTool Protocol
+// MARK: - Tool Protocol
 
-public protocol RealtimeTool<Arguments>: Sendable {
+public protocol Tool<Arguments>: Sendable {
 	associatedtype Arguments: Decodable & Sendable
+	associatedtype Output: Encodable & Sendable
 
 	var name: String { get }
 	var description: String { get }
 	var parametersSchema: JSONSchema { get }
 
-	func call(arguments: Arguments) async throws -> String
+	func call(arguments: Arguments) async throws -> Output
 }
 
-public extension RealtimeTool {
-	var definition: Tool {
+public extension Tool {
+	var definition: ToolDefinition {
 		.function(.init(name: name, description: description, parameters: parametersSchema))
+	}
+}
+
+public extension Tool where Arguments: Generable {
+	var parametersSchema: JSONSchema {
+		Arguments.generationSchema
 	}
 }
 
@@ -28,11 +35,11 @@ public struct ToolRegistry: Sendable {
 
 	private let handlers: [String: @Sendable (String) async throws -> String]
 
-	public let definitions: [Tool]
+	public let definitions: [ToolDefinition]
 
-	public init(_ tools: [any RealtimeTool]) {
+	public init(_ tools: [any Tool]) {
 		var handlers = [String: @Sendable (String) async throws -> String]()
-		var definitions = [Tool]()
+		var definitions = [ToolDefinition]()
 
 		for tool in tools {
 			definitions.append(tool.definition)
@@ -52,7 +59,7 @@ public struct ToolRegistry: Sendable {
 		return Item.FunctionCallOutput(id: UUID().uuidString, callId: callId, output: output)
 	}
 
-	private static func register<T: RealtimeTool>(_ tool: T, into handlers: inout [String: @Sendable (String) async throws -> String]) {
+	private static func register<T: Tool>(_ tool: T, into handlers: inout [String: @Sendable (String) async throws -> String]) {
 		handlers[tool.name] = { arguments in
 			let data = Data(arguments.utf8)
 			let decoded: T.Arguments
@@ -61,22 +68,37 @@ public struct ToolRegistry: Sendable {
 			} catch {
 				throw Error.invalidArguments(tool.name, underlying: error)
 			}
-			return try await tool.call(arguments: decoded)
+			return try encodeToolOutput(try await tool.call(arguments: decoded))
 		}
+	}
+
+	private static func encodeToolOutput<T: Encodable>(_ output: T) throws -> String {
+		if let string = output as? String {
+			return string
+		}
+
+		let data = try JSONEncoder().encode(output)
+		guard let string = String(data: data, encoding: .utf8) else {
+			throw EncodingError.invalidValue(output, .init(codingPath: [], debugDescription: "Unable to encode tool output as UTF-8 string"))
+		}
+
+		return string
 	}
 }
 
-// MARK: - Tool
+// MARK: - ToolChoice
 
-public enum Tool: Equatable, Hashable, Sendable {
-	public enum Choice: Equatable, Hashable, Sendable {
-		case none
-		case auto
-		case required
-		case function(name: String)
-		case mcp(server: String, tool: String?)
-	}
+public enum ToolChoice: Equatable, Hashable, Sendable {
+	case none
+	case auto
+	case required
+	case function(name: String)
+	case mcp(server: String, tool: String?)
+}
 
+// MARK: - ToolDefinition
+
+public enum ToolDefinition: Equatable, Hashable, Sendable {
 	public struct Function: Equatable, Hashable, Codable, Sendable {
 		public var name: String
 		public var description: String?
@@ -185,7 +207,7 @@ public enum Tool: Equatable, Hashable, Sendable {
 	case mcp(MCP)
 }
 
-extension Tool: Codable {
+extension ToolDefinition: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case type
 	}
@@ -218,7 +240,7 @@ extension Tool: Codable {
 	}
 }
 
-extension Tool.Choice: Codable {
+extension ToolChoice: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case type, name, serverLabel
 	}
@@ -272,7 +294,7 @@ extension Tool.Choice: Codable {
 	}
 }
 
-extension Tool.MCP.AllowedTools: Codable {
+extension ToolDefinition.MCP.AllowedTools: Codable {
 	public func encode(to encoder: any Encoder) throws {
 		switch self {
 			case let .names(names):
@@ -288,11 +310,11 @@ extension Tool.MCP.AllowedTools: Codable {
 			return
 		}
 
-		self = .filter(try Tool.MCP.Filter(from: decoder))
+		self = .filter(try ToolDefinition.MCP.Filter(from: decoder))
 	}
 }
 
-extension Tool.MCP.RequireApproval: Codable {
+extension ToolDefinition.MCP.RequireApproval: Codable {
 	public func encode(to encoder: any Encoder) throws {
 		switch self {
 			case let .setting(setting):

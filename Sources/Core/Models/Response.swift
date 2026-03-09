@@ -22,8 +22,8 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 		public var outputModalities: [Session.OutputModality]?
 		public var prompt: Session.Prompt?
 		public var temperature: Double?
-		public var toolChoice: Tool.Choice?
-		public var tools: [Tool]?
+		public var toolChoice: ToolChoice?
+		public var tools: [ToolDefinition]?
 
 		public init(
 			audio: Audio? = nil,
@@ -35,8 +35,8 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 			outputModalities: [Session.OutputModality]? = nil,
 			prompt: Session.Prompt? = nil,
 			temperature: Double? = nil,
-			toolChoice: Tool.Choice? = nil,
-			tools: [Tool]? = nil
+			toolChoice: ToolChoice? = nil,
+			tools: [ToolDefinition]? = nil
 		) {
 			self.audio = audio
 			self.conversation = conversation

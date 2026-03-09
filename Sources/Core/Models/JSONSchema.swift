@@ -9,15 +9,21 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 	case boolean(description: String? = nil)
 	case anyOf([JSONSchema], description: String? = nil)
 	case `enum`(cases: [String], description: String? = nil)
-	case object(properties: [String: JSONSchema], description: String? = nil)
-	case string(pattern: String? = nil, format: StringFormat? = nil, description: String? = nil)
+	case object(properties: [String: JSONSchema], required: [String]? = nil, description: String? = nil)
+	case string(
+		pattern: String? = nil,
+		format: StringFormat? = nil,
+		minLength: Int? = nil,
+		maxLength: Int? = nil,
+		description: String? = nil
+	)
 	case array(of: JSONSchema, minItems: Int? = nil, maxItems: Int? = nil, description: String? = nil)
 	case number(
-		multipleOf: Int? = nil,
-		minimum: Int? = nil,
-		exclusiveMinimum: Int? = nil,
-		maximum: Int? = nil,
-		exclusiveMaximum: Int? = nil,
+		multipleOf: Double? = nil,
+		minimum: Double? = nil,
+		exclusiveMinimum: Double? = nil,
+		maximum: Double? = nil,
+		exclusiveMaximum: Double? = nil,
 		description: String? = nil
 	)
 	case integer(
@@ -35,30 +41,31 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 			     let .boolean(description),
 			     let .anyOf(_, description),
 			     let .enum(_, description),
-			     let .object(_, description),
-			     let .string(_, _, description),
+			     let .object(_, _, description),
+			     let .string(_, _, _, _, description),
 			     let .array(_, _, _, description),
 			     let .number(_, _, _, _, _, description),
 			     let .integer(_, _, _, _, _, description): return description
 		}
 	}
 
-	func withDescription(_: String?) -> JSONSchema {
+	public func described(_ description: String?) -> JSONSchema {
 		switch self {
 			case .null: return .null(description: description)
 			case .boolean: return .boolean(description: description)
 			case let .anyOf(cases, _): return .anyOf(cases, description: description)
 			case let .enum(cases, _): return .enum(cases: cases, description: description)
-			case let .object(properties, _): return .object(properties: properties, description: description)
-			case let .string(pattern, format, _): return .string(pattern: pattern, format: format, description: description)
+			case let .object(properties, required, _): return .object(properties: properties, required: required, description: description)
+			case let .string(pattern, format, minLength, maxLength, _):
+				return .string(pattern: pattern, format: format, minLength: minLength, maxLength: maxLength, description: description)
 			case let .array(of: items, minItems, maxItems, _):
 				return .array(of: items, minItems: minItems, maxItems: maxItems, description: description)
-			case let .number(multipleOf, maximum, exclusiveMaximum, minimum, exclusiveMinimum, _):
+			case let .number(multipleOf, minimum, exclusiveMinimum, maximum, exclusiveMaximum, _):
 				return .number(
 					multipleOf: multipleOf, minimum: minimum, exclusiveMinimum: exclusiveMinimum,
 					maximum: maximum, exclusiveMaximum: exclusiveMaximum, description: description
 				)
-			case let .integer(multipleOf, maximum, exclusiveMaximum, minimum, exclusiveMinimum, _):
+			case let .integer(multipleOf, minimum, exclusiveMinimum, maximum, exclusiveMaximum, _):
 				return .integer(
 					multipleOf: multipleOf, minimum: minimum, exclusiveMinimum: exclusiveMinimum,
 					maximum: maximum, exclusiveMaximum: exclusiveMaximum, description: description
@@ -69,7 +76,7 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 
 extension JSONSchema: Codable {
 	private enum CodingKeys: String, CodingKey {
-		case type, items, `enum`, anyOf, format, pattern, required, minItems, maxItems, minimum, maximum,
+		case type, items, `enum`, anyOf, format, pattern, required, minItems, maxItems, minLength, maxLength, minimum, maximum,
 		     properties, multipleOf, description, exclusiveMinimum, exclusiveMaximum, additionalProperties
 	}
 
@@ -90,15 +97,17 @@ extension JSONSchema: Codable {
 				try container.encode(cases, forKey: .enum)
 				try container.encode("string", forKey: .type)
 				if let description { try container.encode(description, forKey: .description) }
-			case let .object(properties, description):
+			case let .object(properties, required, description):
 				try container.encode("object", forKey: .type)
 				try container.encode(properties, forKey: .properties)
 				try container.encode(false, forKey: .additionalProperties)
-				try container.encode(Array(properties.keys), forKey: .required)
+				try container.encode(required ?? Array(properties.keys), forKey: .required)
 				if let description { try container.encode(description, forKey: .description) }
-			case let .string(pattern, format, description):
+			case let .string(pattern, format, minLength, maxLength, description):
 				try container.encode("string", forKey: .type)
 				if let pattern = pattern { try container.encode(pattern, forKey: .pattern) }
+				if let minLength = minLength { try container.encode(minLength, forKey: .minLength) }
+				if let maxLength = maxLength { try container.encode(maxLength, forKey: .maxLength) }
 				if let description { try container.encode(description, forKey: .description) }
 				if let format = format { try container.encode(format.rawValue, forKey: .format) }
 			case let .array(of: items, minItems, maxItems, description):
@@ -150,6 +159,7 @@ extension JSONSchema: Codable {
 		if type == "object" {
 			self = try .object(
 				properties: container.decode([String: JSONSchema].self, forKey: .properties),
+				required: container.decodeIfPresent([String].self, forKey: .required),
 				description: description
 			)
 			return
@@ -164,6 +174,8 @@ extension JSONSchema: Codable {
 			self = try .string(
 				pattern: container.decodeIfPresent(String.self, forKey: .pattern),
 				format: container.decodeIfPresent(StringFormat.self, forKey: .format),
+				minLength: container.decodeIfPresent(Int.self, forKey: .minLength),
+				maxLength: container.decodeIfPresent(Int.self, forKey: .maxLength),
 				description: description
 			)
 			return
@@ -181,11 +193,11 @@ extension JSONSchema: Codable {
 
 		if type == "number" {
 			self = try .number(
-				multipleOf: container.decodeIfPresent(Int.self, forKey: .multipleOf),
-				minimum: container.decodeIfPresent(Int.self, forKey: .minimum),
-				exclusiveMinimum: container.decodeIfPresent(Int.self, forKey: .exclusiveMinimum),
-				maximum: container.decodeIfPresent(Int.self, forKey: .maximum),
-				exclusiveMaximum: container.decodeIfPresent(Int.self, forKey: .exclusiveMaximum),
+				multipleOf: container.decodeIfPresent(Double.self, forKey: .multipleOf),
+				minimum: container.decodeIfPresent(Double.self, forKey: .minimum),
+				exclusiveMinimum: container.decodeIfPresent(Double.self, forKey: .exclusiveMinimum),
+				maximum: container.decodeIfPresent(Double.self, forKey: .maximum),
+				exclusiveMaximum: container.decodeIfPresent(Double.self, forKey: .exclusiveMaximum),
 				description: description
 			)
 			return

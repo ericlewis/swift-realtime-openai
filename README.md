@@ -133,6 +133,54 @@ for try await event in api.events {
 }
 ```
 
+## Tool Authoring
+
+The SDK supports typed tool authoring with `@Generable` arguments and `@Guide` field constraints, close to Apple’s Foundation Models surface:
+
+```swift
+import RealtimeAPI
+
+struct FindContacts: Tool {
+	let name = "findContacts"
+	let description = "Find a specific number of contacts."
+
+	@Generable(description: "Search parameters for a contact lookup.")
+	struct Arguments: Codable, Sendable {
+		@Guide(description: "The number of contacts to get.", .range(1...10))
+		let count: Int
+
+		@Guide(description: "A prefix for contact names.", .pattern("^[A-Za-z]+$"), .length(2...24))
+		let prefix: String?
+
+		@Guide(description: "Email-like query text.", .format(.email))
+		let email: String?
+
+		@Guide(description: "Tags to include.", .count(1...3))
+		let tags: [String]
+	}
+
+	func call(arguments: Arguments) async throws -> [String] {
+		["Ada Lovelace", "Grace Hopper"]
+	}
+}
+```
+
+Supported `@Guide` constraints:
+
+- numeric: `.minimum`, `.maximum`, `.range`
+- arrays: `.count`, `.minimumCount`, `.maximumCount`
+- strings: `.pattern`, `.format`, `.length`, `.minimumLength`, `.maximumLength`
+
+`ToolRegistry` will JSON-encode non-`String` tool outputs automatically before sending them back as `function_call_output` items.
+
+The macros also emit compile-time diagnostics for invalid combinations such as `.pattern` on an `Int` or `.count` on a `String`.
+
+At the API level:
+
+- `Tool` is the authoring protocol for executable tools
+- `ToolDefinition` is the GA wire-model payload used in sessions and responses
+- `ToolChoice` models GA tool-selection behavior
+
 ## Key Types
 
 ### `Session`

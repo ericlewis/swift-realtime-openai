@@ -132,10 +132,10 @@ public final class Conversation: @unchecked Sendable {
 	/// Tools registered here are automatically dispatched when the model invokes them.
 	/// The tool definitions are injected into the session configuration on connect.
 	///
-	/// - Parameter tools: An array of ``RealtimeTool`` instances to register.
+	/// - Parameter tools: An array of ``Tool`` instances to register.
 	/// - Parameter debug: Whether to print debug information to the console.
 	/// - Parameter sessionUpdateCallback: An optional callback to configure the session.
-	public init(tools: [any RealtimeTool], debug: Bool = false, configuring sessionUpdateCallback: SessionUpdateCallback? = nil) {
+	public init(tools: [any Tool], debug: Bool = false, configuring sessionUpdateCallback: SessionUpdateCallback? = nil) {
 		let client = try! WebRTCConnector.create()
 		self.transport = Self.makeLiveTransport(from: client)
 		self.debug = debug

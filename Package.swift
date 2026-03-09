@@ -1,6 +1,7 @@
 // swift-tools-version: 6.2
 
 import PackageDescription
+import CompilerPluginSupport
 
 let package = Package(
 	name: "RealtimeAPI",
@@ -17,9 +18,22 @@ let package = Package(
 	dependencies: [
 		.package(url: "https://github.com/livekit/webrtc-xcframework.git", branch: "main"),
 		.package(url: "https://github.com/apple/swift-testing.git", from: "6.2.4"),
+		.package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
 	],
 	targets: [
-		.target(name: "Core"),
+		.macro(
+			name: "RealtimeToolMacrosImplementation",
+			dependencies: [
+				.product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+				.product(name: "SwiftDiagnostics", package: "swift-syntax"),
+				.product(name: "SwiftSyntax", package: "swift-syntax"),
+				.product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+			]
+		),
+		.target(
+			name: "Core",
+			dependencies: ["RealtimeToolMacrosImplementation"]
+		),
 		.target(name: "WebSocket", dependencies: ["Core"]),
 		.target(name: "UI", dependencies: ["Core", "WebRTC"]),
 		.target(name: "RealtimeAPI", dependencies: ["Core", "WebSocket", "WebRTC", "UI"]),
@@ -29,6 +43,14 @@ let package = Package(
 			dependencies: [
 				"Core",
 				"UI",
+				.product(name: "Testing", package: "swift-testing"),
+			]
+		),
+		.testTarget(
+			name: "RealtimeToolMacrosImplementationTests",
+			dependencies: [
+				"RealtimeToolMacrosImplementation",
+				.product(name: "SwiftSyntaxMacrosGenericTestSupport", package: "swift-syntax"),
 				.product(name: "Testing", package: "swift-testing"),
 			]
 		),

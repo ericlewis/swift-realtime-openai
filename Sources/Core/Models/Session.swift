@@ -406,8 +406,8 @@ public enum Session: Equatable, Hashable, Sendable {
 		public var model: Model?
 		public var outputModalities: [OutputModality]?
 		public var prompt: Prompt?
-		public var toolChoice: Tool.Choice?
-		public var tools: [Tool]?
+		public var toolChoice: ToolChoice?
+		public var tools: [ToolDefinition]?
 		public var tracing: Tracing?
 		public var truncation: Truncation?
 
@@ -421,8 +421,8 @@ public enum Session: Equatable, Hashable, Sendable {
 			model: Model? = nil,
 			outputModalities: [OutputModality]? = nil,
 			prompt: Prompt? = nil,
-			toolChoice: Tool.Choice? = nil,
-			tools: [Tool]? = nil,
+			toolChoice: ToolChoice? = nil,
+			tools: [ToolDefinition]? = nil,
 			tracing: Tracing? = nil,
 			truncation: Truncation? = nil
 		) {

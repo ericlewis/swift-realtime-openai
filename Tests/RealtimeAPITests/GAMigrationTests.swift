@@ -1011,6 +1011,66 @@ struct ConversationGATests {
 	}
 
 	@Test
+	func generableArgumentsSynthesizeSchemaAndTypedOutputEncoding() async throws {
+		let tool = FindContactsTool()
+		let expectedSchema: JSONSchema = .object(
+			properties: [
+				"count": .integer(minimum: 1, maximum: 10, description: "The number of contacts to get"),
+				"query": .string(description: "Optional search text"),
+			],
+			required: ["count"]
+		)
+
+		#expect(tool.parametersSchema == expectedSchema)
+
+		let registry = ToolRegistry([tool])
+		let output = try await registry.handle(
+			name: "findContacts",
+			callId: "call_1",
+			arguments: #"{"count":2,"query":"friends"}"#
+		)
+
+		#expect(output.output == #"["Ada Lovelace","Grace Hopper"]"#)
+	}
+
+	@Test
+	func generableSupportsFullGuideConstraintSurface() {
+		let tool = SearchDirectoryTool()
+		let expectedSchema: JSONSchema = .object(
+			properties: [
+				"prefix": .string(pattern: "^[A-Za-z]+$", minLength: 2, maxLength: 24, description: "Name prefix to search"),
+				"email": .string(format: .email, description: "Optional contact email"),
+				"score": .number(minimum: 0.25, maximum: 0.75, description: "Minimum match score"),
+				"tags": .array(of: .string(), minItems: 1, maxItems: 3, description: "Tags to include"),
+				"aliases": .array(of: .string(), minItems: 1, maxItems: 5, description: "Aliases to include"),
+				"kind": .enum(cases: ["family", "friend"]),
+				"filters": .object(
+					properties: [
+						"city": .string(description: "City filter"),
+					],
+					required: ["city"]
+				),
+			],
+			required: ["prefix", "score", "tags", "kind"],
+			description: "Search directory contacts"
+		)
+
+		#expect(tool.parametersSchema == expectedSchema)
+	}
+
+	@Test
+	func describedPreservesNumericBounds() {
+		#expect(
+			JSONSchema.number(minimum: 0.25, maximum: 0.75)
+				.described("Score") == .number(minimum: 0.25, maximum: 0.75, description: "Score")
+		)
+		#expect(
+			JSONSchema.integer(minimum: 1, maximum: 10)
+				.described("Count") == .integer(minimum: 1, maximum: 10, description: "Count")
+		)
+	}
+
+	@Test
 	func streamedEventsInvalidateObservationTracking() async throws {
 		let recorder = TransportRecorder()
 		let conversation = Conversation(transport: recorder.transport)
@@ -1204,19 +1264,78 @@ private final class TransportRecorder: @unchecked Sendable {
 	}
 }
 
-private struct EchoTool: RealtimeTool {
-	struct Arguments: Decodable, Sendable {
+private struct EchoTool: Tool {
+	@Generable
+	struct Arguments: Codable, Sendable {
+		@Guide(description: "The value to echo.")
 		let value: String
 	}
 
 	let name = "echo"
 	let description = "Echoes the provided value."
-	let parametersSchema: JSONSchema = .object(properties: [
-		"value": .string(description: "The value to echo."),
-	])
 
 	func call(arguments: Arguments) async throws -> String {
 		arguments.value.uppercased()
+	}
+}
+
+private struct FindContactsTool: Tool {
+	@Generable
+	struct Arguments: Codable, Sendable {
+		@Guide(description: "The number of contacts to get", .range(1...10))
+		let count: Int
+
+		@Guide(description: "Optional search text")
+		let query: String?
+	}
+
+	let name = "findContacts"
+	let description = "Find a specific number of contacts"
+
+	func call(arguments _: Arguments) async throws -> [String] {
+		["Ada Lovelace", "Grace Hopper"]
+	}
+}
+
+private struct SearchDirectoryTool: Tool {
+	@Generable(description: "Search directory contacts")
+	struct Arguments: Codable, Sendable {
+		@Guide(description: "Name prefix to search", .pattern("^[A-Za-z]+$"), .length(2...24))
+		let prefix: String
+
+		@Guide(description: "Optional contact email", .format(.email))
+		let email: String?
+
+		@Guide(description: "Minimum match score", .minimum(0.25), .maximum(0.75))
+		let score: Double
+
+		@Guide(description: "Tags to include", .count(1...3))
+		let tags: [String]
+
+		@Guide(description: "Aliases to include", .minimumCount(1), .maximumCount(5))
+		let aliases: [String]?
+
+		let kind: ContactKind
+		let filters: Filters?
+	}
+
+	@Generable
+	enum ContactKind: String, Codable, Sendable {
+		case family
+		case friend
+	}
+
+	@Generable
+	struct Filters: Codable, Sendable {
+		@Guide(description: "City filter")
+		let city: String
+	}
+
+	let name = "searchDirectory"
+	let description = "Searches directory contacts."
+
+	func call(arguments _: Arguments) async throws -> [String] {
+		["Ada Lovelace"]
 	}
 }
 
