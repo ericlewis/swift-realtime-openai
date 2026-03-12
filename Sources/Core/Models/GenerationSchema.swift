@@ -1,5 +1,5 @@
 /// Represents a JSON Schema for validating JSON data structures.
-public indirect enum JSONSchema: Equatable, Hashable, Sendable {
+public indirect enum GenerationSchema: Equatable, Hashable, Sendable {
 	/// Represents the format of a string in JSON Schema.
 	public enum StringFormat: String, Codable, Hashable, Equatable, Sendable {
 		case ipv4, ipv6, uuid, date, time, email, duration, hostname, dateTime = "date-time"
@@ -7,9 +7,9 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 
 	case null(description: String? = nil)
 	case boolean(description: String? = nil)
-	case anyOf([JSONSchema], description: String? = nil)
+	case anyOf([GenerationSchema], description: String? = nil)
 	case `enum`(cases: [String], description: String? = nil)
-	case object(properties: [String: JSONSchema], required: [String]? = nil, description: String? = nil)
+	case object(properties: [String: GenerationSchema], required: [String]? = nil, description: String? = nil)
 	case string(
 		pattern: String? = nil,
 		format: StringFormat? = nil,
@@ -17,7 +17,7 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 		maxLength: Int? = nil,
 		description: String? = nil
 	)
-	case array(of: JSONSchema, minItems: Int? = nil, maxItems: Int? = nil, description: String? = nil)
+	case array(of: GenerationSchema, minItems: Int? = nil, maxItems: Int? = nil, description: String? = nil)
 	case number(
 		multipleOf: Double? = nil,
 		minimum: Double? = nil,
@@ -49,7 +49,7 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 		}
 	}
 
-	public func described(_ description: String?) -> JSONSchema {
+	public func described(_ description: String?) -> GenerationSchema {
 		switch self {
 			case .null: return .null(description: description)
 			case .boolean: return .boolean(description: description)
@@ -74,7 +74,7 @@ public indirect enum JSONSchema: Equatable, Hashable, Sendable {
 	}
 }
 
-extension JSONSchema: Codable {
+extension GenerationSchema: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case type, items, `enum`, anyOf, format, pattern, required, minItems, maxItems, minLength, maxLength, minimum, maximum,
 		     properties, multipleOf, description, exclusiveMinimum, exclusiveMaximum, additionalProperties
@@ -139,7 +139,7 @@ extension JSONSchema: Codable {
 		let container = try decoder.container(keyedBy: CodingKeys.self)
 		let description = try container.decodeIfPresent(String.self, forKey: .description)
 
-		if let anyOf = try container.decodeIfPresent([JSONSchema].self, forKey: .anyOf) {
+		if let anyOf = try container.decodeIfPresent([GenerationSchema].self, forKey: .anyOf) {
 			self = .anyOf(anyOf, description: description)
 			return
 		}
@@ -158,7 +158,7 @@ extension JSONSchema: Codable {
 
 		if type == "object" {
 			self = try .object(
-				properties: container.decode([String: JSONSchema].self, forKey: .properties),
+				properties: container.decode([String: GenerationSchema].self, forKey: .properties),
 				required: container.decodeIfPresent([String].self, forKey: .required),
 				description: description
 			)
@@ -183,7 +183,7 @@ extension JSONSchema: Codable {
 
 		if type == "array" {
 			self = try .array(
-				of: container.decode(JSONSchema.self, forKey: .items),
+				of: container.decode(GenerationSchema.self, forKey: .items),
 				minItems: container.decodeIfPresent(Int.self, forKey: .minItems),
 				maxItems: container.decodeIfPresent(Int.self, forKey: .maxItems),
 				description: description

@@ -10,19 +10,25 @@ public struct GenerableMacro: MemberMacro, ExtensionMacro {
 		conformingTo _: [TypeSyntax],
 		in context: some MacroExpansionContext
 	) throws -> [DeclSyntax] {
+		let description = extractDescription(from: node)
+		let representNilExplicitly = extractRepresentNilSetting(from: node)
+		var members: [String] = []
+
 		if let structDecl = declaration.as(StructDeclSyntax.self) {
 			let properties = try extractProperties(from: structDecl, in: context)
-			let description = extractDescription(from: node)
-			return [DeclSyntax(stringLiteral: generateStructSchema(properties: properties, description: description))]
-		}
-
-		if let enumDecl = declaration.as(EnumDeclSyntax.self) {
+			members.append(generateStructSchema(properties: properties, description: description))
+		} else if let enumDecl = declaration.as(EnumDeclSyntax.self) {
 			let cases = try extractEnumCases(from: enumDecl)
-			let description = extractDescription(from: node)
-			return [DeclSyntax(stringLiteral: generateEnumSchema(cases: cases, description: description))]
+			members.append(generateEnumSchema(cases: cases, description: description))
+		} else {
+			throw GenerableMacroError.unsupportedDeclaration
 		}
 
-		throw GenerableMacroError.unsupportedDeclaration
+		if let representNilExplicitly {
+			members.append(generateRepresentNilProperty(representNilExplicitly))
+		}
+
+		return members.map { DeclSyntax(stringLiteral: $0) }
 	}
 
 	public static func expansion(
@@ -49,7 +55,7 @@ private extension GenerableMacro {
 		let isOptional: Bool
 	}
 
-	struct GuideInfo {
+	final class GuideInfo {
 		var description: String?
 		var minimum: String?
 		var maximum: String?
@@ -59,6 +65,9 @@ private extension GenerableMacro {
 		var maximumLength: Int?
 		var pattern: String?
 		var format: String?
+		var constant: String?
+		var anyOf: [String]?
+		var elementGuide: GuideInfo?
 		var invalidFormat = false
 
 		var hasNumericConstraints: Bool {
@@ -70,7 +79,13 @@ private extension GenerableMacro {
 		}
 
 		var hasStringConstraints: Bool {
-			pattern != nil || format != nil || minimumLength != nil || maximumLength != nil || invalidFormat
+			pattern != nil ||
+				format != nil ||
+				minimumLength != nil ||
+				maximumLength != nil ||
+				constant != nil ||
+				anyOf != nil ||
+				invalidFormat
 		}
 	}
 
@@ -105,17 +120,20 @@ private extension GenerableMacro {
 		case stringConstraintsRequireString
 		case numericConstraintsRequireNumeric
 		case countConstraintsRequireArray
+		case elementConstraintsRequireArray
 
 		var message: String {
 			switch self {
 				case .unsupportedFormat:
 					"@Guide format only supports .ipv4, .ipv6, .uuid, .date, .time, .email, .duration, .hostname, and .dateTime."
 				case .stringConstraintsRequireString:
-					"@Guide pattern, format, and length constraints only apply to String properties."
+					"@Guide pattern, format, length, constant, and anyOf constraints only apply to String properties."
 				case .numericConstraintsRequireNumeric:
 					"@Guide numeric constraints only apply to Int, Double, or Float properties."
 				case .countConstraintsRequireArray:
 					"@Guide count constraints only apply to Array properties."
+				case .elementConstraintsRequireArray:
+					"@Guide element constraints only apply to Array properties."
 			}
 		}
 
@@ -129,16 +147,24 @@ private extension GenerableMacro {
 	}
 
 	static let supportedStringFormats: Set<String> = [
-		".ipv4", ".ipv6", ".uuid", ".date", ".time", ".email", ".duration", ".hostname", ".dateTime",
-		"JSONSchema.StringFormat.ipv4",
-		"JSONSchema.StringFormat.ipv6",
-		"JSONSchema.StringFormat.uuid",
-		"JSONSchema.StringFormat.date",
-		"JSONSchema.StringFormat.time",
-		"JSONSchema.StringFormat.email",
-		"JSONSchema.StringFormat.duration",
-		"JSONSchema.StringFormat.hostname",
-		"JSONSchema.StringFormat.dateTime",
+		".ipv4",
+		".ipv6",
+		".uuid",
+		".date",
+		".time",
+		".email",
+		".duration",
+		".hostname",
+		".dateTime",
+		"GenerationSchema.StringFormat.ipv4",
+		"GenerationSchema.StringFormat.ipv6",
+		"GenerationSchema.StringFormat.uuid",
+		"GenerationSchema.StringFormat.date",
+		"GenerationSchema.StringFormat.time",
+		"GenerationSchema.StringFormat.email",
+		"GenerationSchema.StringFormat.duration",
+		"GenerationSchema.StringFormat.hostname",
+		"GenerationSchema.StringFormat.dateTime",
 	]
 
 	static func extractDescription(from node: AttributeSyntax) -> String? {
@@ -157,6 +183,25 @@ private extension GenerableMacro {
 			   let value = parseStringLiteral(argument.expression)
 			{
 				return value
+			}
+		}
+
+		return nil
+	}
+
+	static func extractRepresentNilSetting(from node: AttributeSyntax) -> Bool? {
+		guard let arguments = node.arguments?.as(LabeledExprListSyntax.self) else {
+			return nil
+		}
+
+		for argument in arguments where argument.label?.text == "representNilExplicitlyInGeneratedContent" {
+			switch argument.expression.trimmedDescription {
+				case "true":
+					return true
+				case "false":
+					return false
+				default:
+					return nil
 			}
 		}
 
@@ -247,94 +292,121 @@ private extension GenerableMacro {
 					continue
 				}
 
-				let expression = argument.expression.trimmedDescription.replacingOccurrences(of: " ", with: "")
-				if expression.hasPrefix(".range("), expression.hasSuffix(")") {
-					let rangeText = String(expression.dropFirst(".range(".count).dropLast())
-					let parts = rangeText.components(separatedBy: "...")
-					if parts.count == 2 {
-						info.minimum = parts[0]
-						info.maximum = parts[1]
-					}
-					continue
-				}
-
-				if expression.hasPrefix(".minimum("), expression.hasSuffix(")") {
-					info.minimum = String(expression.dropFirst(".minimum(".count).dropLast())
-					continue
-				}
-
-				if expression.hasPrefix(".maximum("), expression.hasSuffix(")") {
-					info.maximum = String(expression.dropFirst(".maximum(".count).dropLast())
-					continue
-				}
-
-				if expression.hasPrefix(".count("), expression.hasSuffix(")") {
-					let countText = String(expression.dropFirst(".count(".count).dropLast())
-					let parts = countText.components(separatedBy: "...")
-					if parts.count == 2 {
-						info.minimumCount = Int(parts[0])
-						info.maximumCount = Int(parts[1])
-					} else if let count = Int(countText) {
-						info.minimumCount = count
-						info.maximumCount = count
-					}
-					continue
-				}
-
-				if expression.hasPrefix(".minimumCount("), expression.hasSuffix(")") {
-					let value = String(expression.dropFirst(".minimumCount(".count).dropLast())
-					info.minimumCount = Int(value)
-					continue
-				}
-
-				if expression.hasPrefix(".maximumCount("), expression.hasSuffix(")") {
-					let value = String(expression.dropFirst(".maximumCount(".count).dropLast())
-					info.maximumCount = Int(value)
-					continue
-				}
-
-				if expression.hasPrefix(".length("), expression.hasSuffix(")") {
-					let lengthText = String(expression.dropFirst(".length(".count).dropLast())
-					let parts = lengthText.components(separatedBy: "...")
-					if parts.count == 2 {
-						info.minimumLength = Int(parts[0])
-						info.maximumLength = Int(parts[1])
-					} else if let count = Int(lengthText) {
-						info.minimumLength = count
-						info.maximumLength = count
-					}
-					continue
-				}
-
-				if expression.hasPrefix(".minimumLength("), expression.hasSuffix(")") {
-					let value = String(expression.dropFirst(".minimumLength(".count).dropLast())
-					info.minimumLength = Int(value)
-					continue
-				}
-
-				if expression.hasPrefix(".maximumLength("), expression.hasSuffix(")") {
-					let value = String(expression.dropFirst(".maximumLength(".count).dropLast())
-					info.maximumLength = Int(value)
-					continue
-				}
-
-				if let pattern = parsePattern(from: argument.expression) {
-					info.pattern = pattern
-					continue
-				}
-
-				if let format = parseFormat(from: argument.expression) {
-					info.format = format
-					continue
-				}
-
-				if isFormatExpression(argument.expression) {
-					info.invalidFormat = true
-				}
+				applyGuideConstraint(from: argument.expression, to: &info)
 			}
 		}
 
 		return info
+	}
+
+	static func applyGuideConstraint(from expression: ExprSyntax, to info: inout GuideInfo) {
+		if let pattern = parseRegexLiteral(from: expression) {
+			info.pattern = pattern
+			return
+		}
+
+		let normalized = expression.trimmedDescription.replacingOccurrences(of: " ", with: "")
+
+		if normalized.hasPrefix(".range("), normalized.hasSuffix(")") {
+			let rangeText = String(normalized.dropFirst(".range(".count).dropLast())
+			let parts = rangeText.components(separatedBy: "...")
+			if parts.count == 2 {
+				info.minimum = parts[0]
+				info.maximum = parts[1]
+			}
+			return
+		}
+
+		if normalized.hasPrefix(".minimum("), normalized.hasSuffix(")") {
+			info.minimum = String(normalized.dropFirst(".minimum(".count).dropLast())
+			return
+		}
+
+		if normalized.hasPrefix(".maximum("), normalized.hasSuffix(")") {
+			info.maximum = String(normalized.dropFirst(".maximum(".count).dropLast())
+			return
+		}
+
+		if normalized.hasPrefix(".count("), normalized.hasSuffix(")") {
+			let countText = String(normalized.dropFirst(".count(".count).dropLast())
+			let parts = countText.components(separatedBy: "...")
+			if parts.count == 2 {
+				info.minimumCount = Int(parts[0])
+				info.maximumCount = Int(parts[1])
+			} else if let count = Int(countText) {
+				info.minimumCount = count
+				info.maximumCount = count
+			}
+			return
+		}
+
+		if normalized.hasPrefix(".minimumCount("), normalized.hasSuffix(")") {
+			let value = String(normalized.dropFirst(".minimumCount(".count).dropLast())
+			info.minimumCount = Int(value)
+			return
+		}
+
+		if normalized.hasPrefix(".maximumCount("), normalized.hasSuffix(")") {
+			let value = String(normalized.dropFirst(".maximumCount(".count).dropLast())
+			info.maximumCount = Int(value)
+			return
+		}
+
+		if normalized.hasPrefix(".length("), normalized.hasSuffix(")") {
+			let lengthText = String(normalized.dropFirst(".length(".count).dropLast())
+			let parts = lengthText.components(separatedBy: "...")
+			if parts.count == 2 {
+				info.minimumLength = Int(parts[0])
+				info.maximumLength = Int(parts[1])
+			} else if let count = Int(lengthText) {
+				info.minimumLength = count
+				info.maximumLength = count
+			}
+			return
+		}
+
+		if normalized.hasPrefix(".minimumLength("), normalized.hasSuffix(")") {
+			let value = String(normalized.dropFirst(".minimumLength(".count).dropLast())
+			info.minimumLength = Int(value)
+			return
+		}
+
+		if normalized.hasPrefix(".maximumLength("), normalized.hasSuffix(")") {
+			let value = String(normalized.dropFirst(".maximumLength(".count).dropLast())
+			info.maximumLength = Int(value)
+			return
+		}
+
+		if let pattern = parsePattern(from: expression) {
+			info.pattern = pattern
+			return
+		}
+
+		if let format = parseFormat(from: expression) {
+			info.format = format
+			return
+		}
+
+		if let constant = parseConstant(from: expression) {
+			info.constant = constant
+			return
+		}
+
+		if let values = parseAnyOf(from: expression) {
+			info.anyOf = values
+			return
+		}
+
+		if let nestedExpression = parseElementConstraint(from: expression) {
+			var nestedGuide = GuideInfo()
+			applyGuideConstraint(from: nestedExpression, to: &nestedGuide)
+			info.elementGuide = nestedGuide
+			return
+		}
+
+		if isFormatExpression(expression) {
+			info.invalidFormat = true
+		}
 	}
 
 	static func schemaExpression(
@@ -375,7 +447,7 @@ private extension GenerableMacro {
 			let elementType = String(normalizedType.dropFirst().dropLast())
 			let element = try schemaExpression(
 				for: elementType,
-				guide: .init(),
+				guide: guide.elementGuide ?? .init(),
 				propertyName: propertyName,
 				diagnosticNode: diagnosticNode,
 				in: context
@@ -391,7 +463,7 @@ private extension GenerableMacro {
 			let elementType = String(normalizedType.dropFirst("Array<".count).dropLast())
 			let element = try schemaExpression(
 				for: elementType,
-				guide: .init(),
+				guide: guide.elementGuide ?? .init(),
 				propertyName: propertyName,
 				diagnosticNode: diagnosticNode,
 				in: context
@@ -407,6 +479,13 @@ private extension GenerableMacro {
 
 		switch kind {
 			case .string:
+				if let constant = guide.constant {
+					return (".enum(cases: [\(literal(constant))], description: \(literal(guide.description)))", false)
+				}
+				if let values = guide.anyOf {
+					let cases = values.map(literal).joined(separator: ", ")
+					return (".enum(cases: [\(cases)], description: \(literal(guide.description)))", false)
+				}
 				return (
 					".string(pattern: \(literal(guide.pattern)), format: \(sourceLiteral(guide.format)), minLength: \(sourceLiteral(guide.minimumLength)), maxLength: \(sourceLiteral(guide.maximumLength)), description: \(literal(guide.description)))",
 					false
@@ -459,6 +538,10 @@ private extension GenerableMacro {
 			context.diagnose(Diagnostic(node: node, message: GuideDiagnosticMessage.countConstraintsRequireArray))
 		}
 
+		if guide.elementGuide != nil, kind != .array {
+			context.diagnose(Diagnostic(node: node, message: GuideDiagnosticMessage.elementConstraintsRequireArray))
+		}
+
 		if guide.hasStringConstraints, kind != .string {
 			context.diagnose(Diagnostic(node: node, message: GuideDiagnosticMessage.stringConstraintsRequireString))
 		}
@@ -479,7 +562,7 @@ private extension GenerableMacro {
 			.joined(separator: ", ")
 
 		return """
-		static var generationSchema: JSONSchema {
+		static var generationSchema: GenerationSchema {
 			.object(
 				properties: [
 					\(propertyLines)
@@ -492,10 +575,18 @@ private extension GenerableMacro {
 	}
 
 	static func generateEnumSchema(cases: [String], description: String?) -> String {
-		let casesLiteral = cases.map { literal($0) }.joined(separator: ", ")
+		let casesLiteral = cases.map(literal).joined(separator: ", ")
 		return """
-		static var generationSchema: JSONSchema {
+		static var generationSchema: GenerationSchema {
 			.enum(cases: [\(casesLiteral)], description: \(literal(description)))
+		}
+		"""
+	}
+
+	static func generateRepresentNilProperty(_ value: Bool) -> String {
+		"""
+		static var representNilExplicitlyInGeneratedContent: Bool {
+			\(value ? "true" : "false")
 		}
 		"""
 	}
@@ -535,7 +626,7 @@ private extension GenerableMacro {
 			return nil
 		}
 
-		return parseStringLiteral(firstArgument.expression)
+		return parseStringLiteral(firstArgument.expression) ?? parseRegexLiteral(from: firstArgument.expression)
 	}
 
 	static func parseFormat(from expression: ExprSyntax) -> String? {
@@ -560,5 +651,57 @@ private extension GenerableMacro {
 		}
 
 		return functionCall.calledExpression.trimmedDescription == ".format"
+	}
+
+	static func parseConstant(from expression: ExprSyntax) -> String? {
+		guard let functionCall = expression.as(FunctionCallExprSyntax.self),
+		      functionCall.calledExpression.trimmedDescription == ".constant",
+		      let firstArgument = functionCall.arguments.first
+		else {
+			return nil
+		}
+
+		return parseStringLiteral(firstArgument.expression)
+	}
+
+	static func parseAnyOf(from expression: ExprSyntax) -> [String]? {
+		guard let functionCall = expression.as(FunctionCallExprSyntax.self),
+		      functionCall.calledExpression.trimmedDescription == ".anyOf",
+		      let firstArgument = functionCall.arguments.first,
+		      let array = firstArgument.expression.as(ArrayExprSyntax.self)
+		else {
+			return nil
+		}
+
+		let values = array.elements.compactMap { parseStringLiteral($0.expression) }
+		return values.count == array.elements.count ? values : nil
+	}
+
+	static func parseElementConstraint(from expression: ExprSyntax) -> ExprSyntax? {
+		guard let functionCall = expression.as(FunctionCallExprSyntax.self),
+		      functionCall.calledExpression.trimmedDescription == ".element",
+		      let firstArgument = functionCall.arguments.first
+		else {
+			return nil
+		}
+
+		return firstArgument.expression
+	}
+
+	static func parseRegexLiteral(from expression: ExprSyntax) -> String? {
+		let text = expression.trimmedDescription
+
+		if text.hasPrefix("/"), text.hasSuffix("/"), text.count >= 2 {
+			return String(text.dropFirst().dropLast())
+		}
+
+		let hashCount = text.prefix { $0 == "#" }.count
+		guard hashCount > 0 else { return nil }
+
+		let prefix = String(repeating: "#", count: hashCount) + "/"
+		let suffix = "/" + String(repeating: "#", count: hashCount)
+		guard text.hasPrefix(prefix), text.hasSuffix(suffix) else { return nil }
+
+		return String(text.dropFirst(prefix.count).dropLast(suffix.count))
 	}
 }

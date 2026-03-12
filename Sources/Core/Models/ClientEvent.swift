@@ -1,7 +1,7 @@
 import Foundation
 
-public enum ClientEvent: Equatable, Hashable, Sendable {
-	case updateSession(eventId: String?, session: Session)
+package enum ClientEvent: Equatable, Hashable, Sendable {
+	case updateSession(eventId: String?, session: SessionConfiguration)
 	case appendInputAudioBuffer(eventId: String?, audio: AudioData)
 	case commitInputAudioBuffer(eventId: String?)
 	case clearInputAudioBuffer(eventId: String?)
@@ -9,7 +9,7 @@ public enum ClientEvent: Equatable, Hashable, Sendable {
 	case retrieveConversationItem(eventId: String?, itemId: String)
 	case truncateConversationItem(eventId: String?, itemId: String, contentIndex: Int, audioEndMs: Int)
 	case deleteConversationItem(eventId: String?, itemId: String)
-	case createResponse(eventId: String?, response: Response.Config?)
+	case createResponse(eventId: String?, response: ResponseDTO.Config?)
 	case cancelResponse(eventId: String?, responseId: String?)
 	case outputAudioBufferClear(eventId: String?)
 }
@@ -94,7 +94,7 @@ extension ClientEvent: Codable {
 			case "session.update":
 				self = .updateSession(
 					eventId: try container.decodeIfPresent(String.self, forKey: .eventId),
-					session: try container.decode(Session.self, forKey: .session)
+					session: try container.decode(SessionConfiguration.self, forKey: .session)
 				)
 			case "input_audio_buffer.append":
 				self = .appendInputAudioBuffer(
@@ -131,7 +131,7 @@ extension ClientEvent: Codable {
 			case "response.create":
 				self = .createResponse(
 					eventId: try container.decodeIfPresent(String.self, forKey: .eventId),
-					response: try container.decodeIfPresent(Response.Config.self, forKey: .response)
+					response: try container.decodeIfPresent(ResponseDTO.Config.self, forKey: .response)
 				)
 			case "response.cancel":
 				self = .cancelResponse(
@@ -146,16 +146,16 @@ extension ClientEvent: Codable {
 	}
 }
 
-public extension ClientEvent {
-	static func updateSession(_ session: Session, withEventId eventId: String? = nil) -> ClientEvent {
+package extension ClientEvent {
+	static func updateSession(_ session: SessionConfiguration, withEventId eventId: String? = nil) -> ClientEvent {
 		.updateSession(eventId: eventId, session: session)
 	}
 
-	static func updateSession(_ session: Session.Realtime, withEventId eventId: String? = nil) -> ClientEvent {
+	static func updateSession(_ session: SessionConfiguration.Realtime, withEventId eventId: String? = nil) -> ClientEvent {
 		.updateSession(.realtime(session), withEventId: eventId)
 	}
 
-	static func updateSession(_ session: Session.Transcription, withEventId eventId: String? = nil) -> ClientEvent {
+	static func updateSession(_ session: SessionConfiguration.Transcription, withEventId eventId: String? = nil) -> ClientEvent {
 		.updateSession(.transcription(session), withEventId: eventId)
 	}
 
@@ -187,7 +187,7 @@ public extension ClientEvent {
 		.deleteConversationItem(eventId: eventId, itemId: itemId)
 	}
 
-	static func createResponse(using response: Response.Config? = nil, withEventId eventId: String? = nil) -> ClientEvent {
+	static func createResponse(using response: ResponseDTO.Config? = nil, withEventId eventId: String? = nil) -> ClientEvent {
 		.createResponse(eventId: eventId, response: response)
 	}
 

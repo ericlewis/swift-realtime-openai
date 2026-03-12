@@ -4,9 +4,9 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public extension RealtimeAPI {
+package extension RealtimeAPI {
 	/// Connect to the OpenAI WebSocket Realtime API with the given request.
-	static func webSocket(connectingTo request: URLRequest) -> RealtimeAPI {
+	internal static func webSocket(connectingTo request: URLRequest) -> RealtimeAPI {
 		RealtimeAPI(connector: WebSocketConnector(connectingTo: request))
 	}
 

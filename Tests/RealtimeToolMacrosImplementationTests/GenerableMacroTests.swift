@@ -15,103 +15,170 @@ struct GenerableMacroTests {
 	func patternConstraintDiagnosesNonStringProperty() {
 		assertExpands(
 			"""
-			@Generable
-			struct BadArguments {
-				@Guide(description: "Nope", .pattern("^[a-z]+$"))
-				let count: Int
-			}
-			""",
-			expandedSource: """
-			struct BadArguments {
-				let count: Int
+				@Generable
+				struct BadArguments {
+					@Guide(description: "Nope", .pattern("^[a-z]+$"))
+					let count: Int
+				}
+				""",
+				expandedSource: """
+				struct BadArguments {
+					let count: Int
 
-			    static var generationSchema: JSONSchema {
-			    	.object(
-			    		properties: [
-			    			"count": .integer(minimum: nil, maximum: nil, description: "Nope")
-			    		],
-			    		required: ["count"],
-			    		description: nil
-			    	)
-			    }
-			}
+				    static var generationSchema: GenerationSchema {
+				    	.object(
+				    		properties: [
+				    			"count": .integer(minimum: nil, maximum: nil, description: "Nope")
+				    		],
+				    		required: ["count"],
+				    		description: nil
+				    	)
+				    }
+				}
 
-			extension BadArguments: Generable {
-			}
-			""",
-			diagnostics: [
-				DiagnosticSpec(message: "@Guide pattern, format, and length constraints only apply to String properties.", line: 3, column: 2),
-			]
-		)
-	}
+				extension BadArguments: Generable {
+				}
+				""",
+				diagnostics: [
+					DiagnosticSpec(message: "@Guide pattern, format, length, constant, and anyOf constraints only apply to String properties.", line: 3, column: 2),
+				]
+			)
+		}
 
 	@Test
 	func countConstraintDiagnosesNonArrayProperty() {
 		assertExpands(
 			"""
-			@Generable
-			struct BadArguments {
-				@Guide(description: "Name", .count(2))
-				let name: String
-			}
-			""",
-			expandedSource: """
-			struct BadArguments {
-				let name: String
+				@Generable
+				struct BadArguments {
+					@Guide(description: "Name", .count(2))
+					let name: String
+				}
+				""",
+				expandedSource: """
+				struct BadArguments {
+					let name: String
 
-			    static var generationSchema: JSONSchema {
-			    	.object(
-			    		properties: [
-			    			"name": .string(pattern: nil, format: nil, minLength: nil, maxLength: nil, description: "Name")
-			    		],
-			    		required: ["name"],
-			    		description: nil
-			    	)
-			    }
-			}
+				    static var generationSchema: GenerationSchema {
+				    	.object(
+				    		properties: [
+				    			"name": .string(pattern: nil, format: nil, minLength: nil, maxLength: nil, description: "Name")
+				    		],
+				    		required: ["name"],
+				    		description: nil
+				    	)
+				    }
+				}
 
-			extension BadArguments: Generable {
-			}
-			""",
-			diagnostics: [
-				DiagnosticSpec(message: "@Guide count constraints only apply to Array properties.", line: 3, column: 2),
-			]
-		)
-	}
+				extension BadArguments: Generable {
+				}
+				""",
+				diagnostics: [
+					DiagnosticSpec(message: "@Guide count constraints only apply to Array properties.", line: 3, column: 2),
+				]
+			)
+		}
 
 	@Test
 	func formatConstraintDiagnosesUnsupportedFormat() {
 		assertExpands(
 			"""
-			@Generable
-			struct BadArguments {
-				@Guide(description: "Email", .format(.postalCode))
-				let email: String
-			}
-			""",
-			expandedSource: """
-			struct BadArguments {
-				let email: String
+				@Generable
+				struct BadArguments {
+					@Guide(description: "Email", .format(.postalCode))
+					let email: String
+				}
+				""",
+				expandedSource: """
+				struct BadArguments {
+					let email: String
 
-			    static var generationSchema: JSONSchema {
-			    	.object(
-			    		properties: [
-			    			"email": .string(pattern: nil, format: nil, minLength: nil, maxLength: nil, description: "Email")
-			    		],
-			    		required: ["email"],
-			    		description: nil
-			    	)
-			    }
-			}
+				    static var generationSchema: GenerationSchema {
+				    	.object(
+				    		properties: [
+				    			"email": .string(pattern: nil, format: nil, minLength: nil, maxLength: nil, description: "Email")
+				    		],
+				    		required: ["email"],
+				    		description: nil
+				    	)
+				    }
+				}
 
-			extension BadArguments: Generable {
-			}
-			""",
-			diagnostics: [
-				DiagnosticSpec(message: "@Guide format only supports .ipv4, .ipv6, .uuid, .date, .time, .email, .duration, .hostname, and .dateTime.", line: 3, column: 2),
-			]
-		)
-	}
+				extension BadArguments: Generable {
+				}
+				""",
+				diagnostics: [
+					DiagnosticSpec(message: "@Guide format only supports .ipv4, .ipv6, .uuid, .date, .time, .email, .duration, .hostname, and .dateTime.", line: 3, column: 2),
+				]
+			)
+		}
+
+		@Test
+		func regexGuideExpandsToPatternConstraint() {
+			assertExpands(
+				"""
+				@Generable
+				struct Arguments {
+					@Guide(description: "Slug", /^[a-z]+$/)
+					let slug: String
+				}
+				""",
+				expandedSource: """
+				struct Arguments {
+					let slug: String
+
+				    static var generationSchema: GenerationSchema {
+				    	.object(
+				    		properties: [
+				    			"slug": .string(pattern: "^[a-z]+$", format: nil, minLength: nil, maxLength: nil, description: "Slug")
+				    		],
+				    		required: ["slug"],
+				    		description: nil
+				    	)
+				    }
+				}
+
+				extension Arguments: Generable {
+				}
+				""",
+				diagnostics: []
+			)
+		}
+
+		@Test
+		func representNilOptionGeneratesStaticFlag() {
+			assertExpands(
+				"""
+				@Generable(representNilExplicitlyInGeneratedContent: true)
+				struct Character {
+					let title: String
+				}
+				""",
+				expandedSource: """
+				struct Character {
+					let title: String
+
+				    static var generationSchema: GenerationSchema {
+				    	.object(
+				    		properties: [
+				    			"title": .string(pattern: nil, format: nil, minLength: nil, maxLength: nil, description: nil)
+				    		],
+				    		required: ["title"],
+				    		description: nil
+				    	)
+				    }
+
+				    static var representNilExplicitlyInGeneratedContent: Bool {
+				    	true
+				    }
+				}
+
+				extension Character: Generable {
+				}
+				""",
+				diagnostics: []
+			)
+		}
 
 	private func assertExpands(
 		_ source: String,

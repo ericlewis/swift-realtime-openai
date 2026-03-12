@@ -3,7 +3,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public protocol Connector: Sendable {
+package protocol RealtimeConnector: Sendable {
 	@MainActor var status: RealtimeAPI.Status { get }
 	var statusUpdates: AsyncStream<RealtimeAPI.Status> { get }
 	var events: AsyncThrowingStream<ServerEvent, Error> { get }

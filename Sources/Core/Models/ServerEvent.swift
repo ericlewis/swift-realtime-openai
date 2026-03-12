@@ -28,9 +28,9 @@ public enum ServerEvent: Sendable {
 	}
 
 	case error(eventId: String, error: ServerError)
-	case sessionCreated(eventId: String, session: Session)
-	case sessionUpdated(eventId: String, session: Session)
-	case conversationCreated(eventId: String, conversation: Session.ConversationResource)
+	case sessionCreated(eventId: String, session: SessionConfiguration)
+	case sessionUpdated(eventId: String, session: SessionConfiguration)
+	case conversationCreated(eventId: String, conversation: SessionConfiguration.ConversationResource)
 	case conversationItemCreated(eventId: String, item: Item, previousItemId: String?)
 	case conversationItemAdded(eventId: String, item: Item, previousItemId: String?)
 	case conversationItemDone(eventId: String, item: Item, previousItemId: String?)
@@ -41,7 +41,7 @@ public enum ServerEvent: Sendable {
 		contentIndex: Int,
 		transcript: String,
 		logprobs: [LogProb]?,
-		usage: Response.Usage
+		usage: ResponseDTO.Usage
 	)
 	case conversationItemInputAudioTranscriptionDelta(
 		eventId: String,
@@ -72,8 +72,8 @@ public enum ServerEvent: Sendable {
 	case outputAudioBufferStarted(eventId: String, responseId: String)
 	case outputAudioBufferStopped(eventId: String, responseId: String)
 	case outputAudioBufferCleared(eventId: String, responseId: String)
-	case responseCreated(eventId: String, response: Response)
-	case responseDone(eventId: String, response: Response)
+	case responseCreated(eventId: String, response: ResponseDTO)
+	case responseDone(eventId: String, response: ResponseDTO)
 	case responseOutputItemAdded(eventId: String, responseId: String, outputIndex: Int, item: Item)
 	case responseOutputItemDone(eventId: String, responseId: String, outputIndex: Int, item: Item)
 	case responseContentPartAdded(
@@ -82,7 +82,7 @@ public enum ServerEvent: Sendable {
 		itemId: String,
 		outputIndex: Int,
 		contentIndex: Int,
-		part: Response.ContentPart
+		part: ResponseDTO.ContentPart
 	)
 	case responseContentPartDone(
 		eventId: String,
@@ -90,7 +90,7 @@ public enum ServerEvent: Sendable {
 		itemId: String,
 		outputIndex: Int,
 		contentIndex: Int,
-		part: Response.ContentPart
+		part: ResponseDTO.ContentPart
 	)
 	case responseOutputTextDelta(
 		eventId: String,
@@ -495,17 +495,17 @@ extension ServerEvent: Codable {
 			case "session.created":
 				self = .sessionCreated(
 					eventId: try container.decode(String.self, forKey: .eventId),
-					session: try container.decode(Session.self, forKey: .session)
+					session: try container.decode(SessionConfiguration.self, forKey: .session)
 				)
 			case "session.updated":
 				self = .sessionUpdated(
 					eventId: try container.decode(String.self, forKey: .eventId),
-					session: try container.decode(Session.self, forKey: .session)
+					session: try container.decode(SessionConfiguration.self, forKey: .session)
 				)
 			case "conversation.created":
 				self = .conversationCreated(
 					eventId: try container.decode(String.self, forKey: .eventId),
-					conversation: try container.decode(Session.ConversationResource.self, forKey: .conversation)
+					conversation: try container.decode(SessionConfiguration.ConversationResource.self, forKey: .conversation)
 				)
 			case "conversation.item.created":
 				self = .conversationItemCreated(
@@ -537,7 +537,7 @@ extension ServerEvent: Codable {
 					contentIndex: try container.decode(Int.self, forKey: .contentIndex),
 					transcript: try container.decode(String.self, forKey: .transcript),
 					logprobs: try container.decodeIfPresent([LogProb].self, forKey: .logprobs),
-					usage: try container.decode(Response.Usage.self, forKey: .usage)
+					usage: try container.decode(ResponseDTO.Usage.self, forKey: .usage)
 				)
 			case "conversation.item.input_audio_transcription.delta":
 				self = .conversationItemInputAudioTranscriptionDelta(
@@ -628,12 +628,12 @@ extension ServerEvent: Codable {
 			case "response.created":
 				self = .responseCreated(
 					eventId: try container.decode(String.self, forKey: .eventId),
-					response: try container.decode(Response.self, forKey: .response)
+					response: try container.decode(ResponseDTO.self, forKey: .response)
 				)
 			case "response.done":
 				self = .responseDone(
 					eventId: try container.decode(String.self, forKey: .eventId),
-					response: try container.decode(Response.self, forKey: .response)
+					response: try container.decode(ResponseDTO.self, forKey: .response)
 				)
 			case "response.output_item.added":
 				self = .responseOutputItemAdded(
@@ -656,7 +656,7 @@ extension ServerEvent: Codable {
 					itemId: try container.decode(String.self, forKey: .itemId),
 					outputIndex: try container.decode(Int.self, forKey: .outputIndex),
 					contentIndex: try container.decode(Int.self, forKey: .contentIndex),
-					part: try container.decode(Response.ContentPart.self, forKey: .part)
+					part: try container.decode(ResponseDTO.ContentPart.self, forKey: .part)
 				)
 			case "response.content_part.done":
 				self = .responseContentPartDone(
@@ -665,7 +665,7 @@ extension ServerEvent: Codable {
 					itemId: try container.decode(String.self, forKey: .itemId),
 					outputIndex: try container.decode(Int.self, forKey: .outputIndex),
 					contentIndex: try container.decode(Int.self, forKey: .contentIndex),
-					part: try container.decode(Response.ContentPart.self, forKey: .part)
+					part: try container.decode(ResponseDTO.ContentPart.self, forKey: .part)
 				)
 			case "response.output_text.delta":
 				self = .responseOutputTextDelta(

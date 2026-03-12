@@ -35,7 +35,7 @@ let package = Package(
 			dependencies: ["RealtimeToolMacrosImplementation"]
 		),
 		.target(name: "WebSocket", dependencies: ["Core"]),
-		.target(name: "UI", dependencies: ["Core", "WebRTC"]),
+		.target(name: "UI", dependencies: ["Core", "WebRTC", "WebSocket"]),
 		.target(name: "RealtimeAPI", dependencies: ["Core", "WebSocket", "WebRTC", "UI"]),
 		.target(name: "WebRTC", dependencies: ["Core", .product(name: "LiveKitWebRTC", package: "webrtc-xcframework")]),
 		.testTarget(

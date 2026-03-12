@@ -10,7 +10,7 @@ import Testing
 struct GAClientEventEncodingTests {
 	@Test
 	func sessionUpdateEncodesRealtimeSessionShape() throws {
-		let session = Session.Realtime(
+		let session = SessionConfiguration.Realtime(
 			audio: .init(output: .init(voice: .marin)),
 			instructions: "Be extra nice today!",
 			model: .gptRealtime,
@@ -32,7 +32,7 @@ struct GAClientEventEncodingTests {
 
 	@Test
 	func transcriptionSessionUpdateEncodesTranscriptionSessionShape() throws {
-		let session = Session.Transcription(
+		let session = SessionConfiguration.Transcription(
 			audio: .init(input: .init(
 				transcription: .init(language: "en", model: .gpt4oTranscribe),
 				turnDetection: .serverVAD(threshold: 0.6)
@@ -58,8 +58,8 @@ struct GAClientEventEncodingTests {
 
 	@Test
 	func responseCreateEncodesOutOfBandItemReferenceInput() throws {
-		let response = Response.Config(
-			conversation: Response.Config.Conversation.none,
+		let response = ResponseDTO.Config(
+			conversation: ResponseDTO.Config.Conversation.none,
 			input: [
 				.itemReference(id: "item_12345"),
 				.message(.init(
@@ -143,7 +143,7 @@ struct GAClientEventEncodingTests {
 struct GADomainRoundTripTests {
 	@Test
 	func promptVariablesRoundTripStructuredValues() throws {
-		let prompt = Session.Prompt(
+		let prompt = SessionConfiguration.Prompt(
 			id: "pmpt_123",
 			variables: [
 				"title": .string("Daily Summary"),
@@ -159,9 +159,9 @@ struct GADomainRoundTripTests {
 
 	@Test
 	func voiceRoundTripsForStringAndObjectForms() throws {
-		#expect(try roundTrip(Session.Voice.marin) == .marin)
-		#expect(try roundTrip(Session.Voice.string("custom-voice-name")) == .string("custom-voice-name"))
-		#expect(try roundTrip(Session.Voice.custom(id: "voice_1234")) == .custom(id: "voice_1234"))
+		#expect(try roundTrip(SessionConfiguration.Voice.marin) == .marin)
+		#expect(try roundTrip(SessionConfiguration.Voice.string("custom-voice-name")) == .string("custom-voice-name"))
+		#expect(try roundTrip(SessionConfiguration.Voice.custom(id: "voice_1234")) == .custom(id: "voice_1234"))
 	}
 }
 
@@ -674,7 +674,7 @@ struct GAServerEventDecodingTests {
 
 	@Test
 	func responseRoundTripsObjectAndStatusDetails() throws {
-		let response = try decodeValue(Response.self, from: """
+		let response = try decodeValue(ResponseDTO.self, from: """
 		{
 		  "id": "resp_123",
 		  "object": "realtime.response",
@@ -689,21 +689,14 @@ struct GAServerEventDecodingTests {
 
 		#expect(response.object == "realtime.response")
 		#expect(response.status == .inProgress)
-
-		guard case let .object(details)? = response.statusDetails else {
-			Issue.record("Expected status_details object")
-			return
-		}
-
-		#expect(details["type"] == .string("incomplete"))
-		#expect(details["reason"] == .string("max_output_tokens"))
+		#expect(response.statusDetails == .incomplete(reason: .maxOutputTokens))
 	}
 }
 
 struct GAClientSecretHelperTests {
 	@Test
 	func createClientSecretPostsUnifiedRequestAndDecodesResponse() async throws {
-		let requestSession = Session.realtime(.init(
+		let requestSession = SessionConfiguration.realtime(.init(
 			audio: .init(input: .init(
 				noiseReduction: .nearField,
 				transcription: .init(model: .gpt4oTranscribe),
@@ -770,7 +763,7 @@ struct GAClientSecretHelperTests {
 
 		let clientSecret = try await RealtimeAPI.createClientSecret(
 			apiKey: "sk-test",
-			session: requestSession,
+			configuration: requestSession,
 			expiresAfter: expiresAfter,
 			using: urlSession
 		)
@@ -778,7 +771,7 @@ struct GAClientSecretHelperTests {
 		#expect(clientSecret.value == "ek_test_123")
 		#expect(clientSecret.expiresAt == 1_756_310_470)
 
-		guard case let .realtime(session) = clientSecret.session else {
+		guard case let .realtime(session) = clientSecret.configuration else {
 			Issue.record("Expected realtime client secret session")
 			return
 		}
@@ -791,47 +784,270 @@ struct GAClientSecretHelperTests {
 }
 
 @MainActor
-struct ConversationGATests {
+struct SessionGATests {
+	@Test
+	func waitForConnectionTimesOut() async throws {
+		let recorder = TransportRecorder(status: .connecting)
+		let session = Session(transport: recorder.transport)
+
+		do {
+			try await session.waitForConnection(timeout: .milliseconds(10))
+			Issue.record("Expected waitForConnection to time out")
+		} catch let error as SessionError {
+			#expect(error == .connectionTimedOut)
+		}
+	}
+
+	@Test
+	func webSocketSessionsUseWebSocketConnectionRequests() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(transport: recorder.transport, connectionTransport: .webSocket)
+
+		try await session.connect(clientSecret: "ek_test_123")
+
+		let request = try #require(recorder.connectRequests.last)
+		#expect(request.url?.scheme == "wss")
+		#expect(request.url?.absoluteString == "wss://api.openai.com/v1/realtime")
+		#expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer ek_test_123")
+	}
+
+	@Test
+	func reconnectRestartsRuntimeProcessing() async throws {
+		var recorder = TransportRecorder(status: .disconnected)
+		let session = Session(
+			transport: recorder.transport,
+			transportFactory: {
+				recorder = TransportRecorder(status: .disconnected)
+				return (recorder.transport, [])
+			},
+			connectionTransport: .webSocket
+		)
+
+		session.disconnect()
+
+		try await session.connect(using: URLRequest(url: URL(string: "wss://example.com")!))
+		await Task.yield()
+		recorder.yield(status: .connected)
+		await Task.yield()
+		recorder.yield(.inputAudioBufferSpeechStarted(
+			eventId: "event_speech_started",
+			itemId: "item_1",
+			audioStartMs: 0
+		))
+
+		try await Task.sleep(for: .milliseconds(10))
+
+		#expect(session.status == .connected)
+		#expect(session.isUserSpeaking)
+	}
+
+	@Test
+	func serverEventsStreamForwardsTransportEvents() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(transport: recorder.transport)
+		var iterator = session.serverEvents.makeAsyncIterator()
+
+		recorder.yield(.conversationCreated(
+			eventId: "event_conversation",
+			conversation: .init(id: "conv_123", object: "realtime.conversation")
+		))
+
+		let event = try await iterator.next()
+
+		guard case let .conversationCreated(eventId, conversation) = try #require(event) else {
+			Issue.record("Expected forwarded conversation.created event")
+			return
+		}
+
+		#expect(eventId == "event_conversation")
+		#expect(conversation.id == "conv_123")
+
+		await Task.yield()
+		await Task.yield()
+		#expect(session.conversationID == "conv_123")
+	}
+
+	@Test
+	func authTokenConnectionRequiresWebSocketTransport() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(transport: recorder.transport, connectionTransport: .webRTC)
+
+		do {
+			try await session.connect(authToken: "sk_test")
+			Issue.record("Expected auth-token connection to require WebSocket transport")
+		} catch let error as SessionError {
+			#expect(error == .webSocketTransportRequired)
+		}
+	}
+
+	@Test
+	func disconnectResetsStatusAndSpeakingState() async throws {
+		let recorder = TransportRecorder(status: .connected)
+		let session = Session(transport: recorder.transport, connectionTransport: .webSocket)
+
+		recorder.yield(status: .connected)
+		try await session.receive(serverEvent: .inputAudioBufferSpeechStarted(
+			eventId: "event_speech_started",
+			itemId: "item_1",
+			audioStartMs: 0
+		))
+		try await session.receive(serverEvent: .outputAudioBufferStarted(
+			eventId: "event_output_started",
+			responseId: "resp_1"
+		))
+
+		session.disconnect()
+
+		#expect(session.status == .disconnected)
+		#expect(session.isUserSpeaking == false)
+		#expect(session.isModelSpeaking == false)
+	}
+
+	@Test
+	func startupConfigurationCallbackUpdatesRealtimeSessions() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(
+			transport: recorder.transport,
+			configuring: { configuration in
+				guard case var .realtime(realtime) = configuration else {
+					Issue.record("Expected realtime configuration in startup callback")
+					return configuration
+				}
+
+				realtime.instructions = "Updated at startup"
+				return .realtime(realtime)
+			}
+		)
+
+		try await session.receive(serverEvent: .sessionCreated(
+			eventId: "event_session",
+			session: .realtime(.init(
+				instructions: "Original",
+				model: .gptRealtime
+			))
+		))
+
+		#expect(session.realtimeConfiguration?.instructions == "Updated at startup")
+
+		guard case let .updateSession(_, .realtime(updated)) = try #require(recorder.sentEvents.last) else {
+			Issue.record("Expected realtime session.update event")
+			return
+		}
+
+		#expect(updated.instructions == "Updated at startup")
+	}
+
+	@Test
+	func startupConfigurationCallbackUpdatesTranscriptionSessions() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(
+			transport: recorder.transport,
+			configuring: { configuration in
+				guard case var .transcription(transcription) = configuration else {
+					Issue.record("Expected transcription configuration in startup callback")
+					return configuration
+				}
+
+				transcription.include = [.inputAudioTranscriptionLogprobs]
+				return .transcription(transcription)
+			}
+		)
+
+		try await session.receive(serverEvent: .sessionCreated(
+			eventId: "event_session",
+			session: .transcription(.init(
+				audio: .init(input: .init(
+					transcription: .init(model: .gpt4oTranscribe)
+				))
+			))
+		))
+
+		#expect(session.transcriptionConfiguration?.include == [.inputAudioTranscriptionLogprobs])
+
+		guard case let .updateSession(_, .transcription(updated)) = try #require(recorder.sentEvents.last) else {
+			Issue.record("Expected transcription session.update event")
+			return
+		}
+
+		#expect(updated.include == [.inputAudioTranscriptionLogprobs])
+	}
+
+	@Test
+	func storesAndUpdatesTranscriptionConfiguration() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(transport: recorder.transport)
+
+		try await session.receive(serverEvent: .sessionCreated(
+			eventId: "event_session",
+			session: .transcription(.init(
+				audio: .init(input: .init(
+					transcription: .init(language: "en", model: .gpt4oTranscribe)
+				))
+			))
+		))
+
+		#expect(session.configuration == .transcription(.init(
+			audio: .init(input: .init(
+				transcription: .init(language: "en", model: .gpt4oTranscribe)
+			))
+		)))
+		#expect(session.transcriptionConfiguration?.audio?.input?.transcription?.model == .gpt4oTranscribe)
+		#expect(session.realtimeConfiguration == nil)
+
+		try await session.updateTranscriptionConfiguration { configuration in
+			var updated = configuration
+			updated.include = [.inputAudioTranscriptionLogprobs]
+			return updated
+		}
+
+		guard case let .updateSession(_, .transcription(updated)) = try #require(recorder.sentEvents.last) else {
+			Issue.record("Expected transcription session.update event")
+			return
+		}
+
+		#expect(updated.include == [.inputAudioTranscriptionLogprobs])
+	}
+
 	@Test
 	func conversationItemsWithoutWireIdsDoNotCollide() async throws {
 		let recorder = TransportRecorder()
-		let conversation = Conversation(transport: recorder.transport)
+		let session = Session(transport: recorder.transport)
 
-		try await conversation.receive(serverEvent: .conversationItemAdded(
+		try await session.receive(serverEvent: .conversationItemAdded(
 			eventId: "event_added_1",
 			item: .message(.init(role: .assistant, status: .inProgress, content: [.outputText("one")])),
 			previousItemId: nil
 		))
 
-		try await conversation.receive(serverEvent: .conversationItemAdded(
+		try await session.receive(serverEvent: .conversationItemAdded(
 			eventId: "event_added_2",
 			item: .message(.init(role: .assistant, status: .inProgress, content: [.outputText("two")])),
 			previousItemId: nil
 		))
 
-		#expect(conversation.entries.count == 2)
+		#expect(session.entries.count == 2)
 	}
 
 	@Test
 	func conversationItemAddedAndDoneUpsertWithoutDuplicates() async throws {
 		let recorder = TransportRecorder()
-		let conversation = Conversation(transport: recorder.transport)
+		let session = Session(transport: recorder.transport)
 
-		try await conversation.receive(serverEvent: .conversationItemAdded(
+		try await session.receive(serverEvent: .conversationItemAdded(
 			eventId: "event_added",
 			item: .message(.init(id: "msg_1", role: .assistant, status: .inProgress, content: [.outputText("hel")])),
 			previousItemId: nil
 		))
 
-		try await conversation.receive(serverEvent: .conversationItemDone(
+		try await session.receive(serverEvent: .conversationItemDone(
 			eventId: "event_done",
 			item: .message(.init(id: "msg_1", role: .assistant, status: .completed, content: [.outputText("hello")])),
 			previousItemId: nil
 		))
 
-		#expect(conversation.entries.count == 1)
+		#expect(session.entries.count == 1)
 
-		guard case let .message(message) = conversation.entries[0],
+		guard case let .message(message) = session.entries[0],
 		      case let .outputText(text) = message.content.first
 		else {
 			Issue.record("Expected a single assistant message")
@@ -843,16 +1059,42 @@ struct ConversationGATests {
 	}
 
 	@Test
+	func cachedEntriesAndMessagesRefreshAfterConversationChanges() async throws {
+		let recorder = TransportRecorder()
+		let session = Session(transport: recorder.transport)
+
+		_ = session.entries
+		_ = session.messages
+
+		try await session.receive(serverEvent: .conversationItemAdded(
+			eventId: "event_added",
+			item: .message(.init(id: "msg_1", role: .assistant, status: .inProgress, content: [.outputText("hello")])),
+			previousItemId: nil
+		))
+
+		#expect(session.entries.count == 1)
+		#expect(session.messages.count == 1)
+
+		try await session.receive(serverEvent: .conversationItemDeleted(
+			eventId: "event_deleted",
+			itemId: "msg_1"
+		))
+
+		#expect(session.entries.isEmpty)
+		#expect(session.messages.isEmpty)
+	}
+
+	@Test
 	func conversationAccumulatesOutputTextDeltas() async throws {
 		let recorder = TransportRecorder()
-		let conversation = Conversation(transport: recorder.transport)
+		let session = Session(transport: recorder.transport)
 
-		try await conversation.receive(serverEvent: .conversationItemAdded(
+		try await session.receive(serverEvent: .conversationItemAdded(
 			eventId: "event_added",
 			item: .message(.init(id: "msg_1", role: .assistant, status: .inProgress, content: [])),
 			previousItemId: nil
 		))
-		try await conversation.receive(serverEvent: .responseContentPartAdded(
+		try await session.receive(serverEvent: .responseContentPartAdded(
 			eventId: "event_part",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -860,7 +1102,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			part: .outputText("")
 		))
-		try await conversation.receive(serverEvent: .responseOutputTextDelta(
+		try await session.receive(serverEvent: .responseOutputTextDelta(
 			eventId: "event_delta_1",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -868,7 +1110,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			delta: "Hel"
 		))
-		try await conversation.receive(serverEvent: .responseOutputTextDelta(
+		try await session.receive(serverEvent: .responseOutputTextDelta(
 			eventId: "event_delta_2",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -876,7 +1118,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			delta: "lo"
 		))
-		try await conversation.receive(serverEvent: .responseOutputTextDone(
+		try await session.receive(serverEvent: .responseOutputTextDone(
 			eventId: "event_done",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -885,7 +1127,7 @@ struct ConversationGATests {
 			text: "Hello"
 		))
 
-		guard case let .message(message) = conversation.entries[0],
+		guard case let .message(message) = session.entries[0],
 		      case let .outputText(text) = message.content.first
 		else {
 			Issue.record("Expected assistant output_text content")
@@ -898,14 +1140,14 @@ struct ConversationGATests {
 	@Test
 	func conversationAccumulatesOutputAudioTranscriptAndAudio() async throws {
 		let recorder = TransportRecorder()
-		let conversation = Conversation(transport: recorder.transport)
+		let session = Session(transport: recorder.transport)
 
-		try await conversation.receive(serverEvent: .conversationItemAdded(
+		try await session.receive(serverEvent: .conversationItemAdded(
 			eventId: "event_added",
 			item: .message(.init(id: "msg_1", role: .assistant, status: .inProgress, content: [])),
 			previousItemId: nil
 		))
-		try await conversation.receive(serverEvent: .responseContentPartAdded(
+		try await session.receive(serverEvent: .responseContentPartAdded(
 			eventId: "event_part",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -913,7 +1155,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			part: .outputAudio(.init(audio: AudioData?.none, transcript: ""))
 		))
-		try await conversation.receive(serverEvent: .responseOutputAudioTranscriptDelta(
+		try await session.receive(serverEvent: .responseOutputAudioTranscriptDelta(
 			eventId: "event_transcript_delta_1",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -921,7 +1163,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			delta: "Hel"
 		))
-		try await conversation.receive(serverEvent: .responseOutputAudioTranscriptDelta(
+		try await session.receive(serverEvent: .responseOutputAudioTranscriptDelta(
 			eventId: "event_transcript_delta_2",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -929,7 +1171,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			delta: "lo"
 		))
-		try await conversation.receive(serverEvent: .responseOutputAudioDelta(
+		try await session.receive(serverEvent: .responseOutputAudioDelta(
 			eventId: "event_audio_delta_1",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -937,7 +1179,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			delta: .init(data: Data([0x01]))
 		))
-		try await conversation.receive(serverEvent: .responseOutputAudioDelta(
+		try await session.receive(serverEvent: .responseOutputAudioDelta(
 			eventId: "event_audio_delta_2",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -945,7 +1187,7 @@ struct ConversationGATests {
 			contentIndex: 0,
 			delta: .init(data: Data([0x02]))
 		))
-		try await conversation.receive(serverEvent: .responseOutputAudioTranscriptDone(
+		try await session.receive(serverEvent: .responseOutputAudioTranscriptDone(
 			eventId: "event_transcript_done",
 			responseId: "resp_1",
 			itemId: "msg_1",
@@ -954,7 +1196,7 @@ struct ConversationGATests {
 			transcript: "Hello"
 		))
 
-		guard case let .message(message) = conversation.entries[0],
+		guard case let .message(message) = session.entries[0],
 		      case let .outputAudio(audio) = message.content.first
 		else {
 			Issue.record("Expected assistant output_audio content")
@@ -968,10 +1210,10 @@ struct ConversationGATests {
 	@Test
 	func functionCallCompletionDispatchesToolResultAndFollowUpResponse() async throws {
 		let recorder = TransportRecorder()
-		let registry = ToolRegistry([EchoTool()])
-		let conversation = Conversation(transport: recorder.transport, toolRegistry: registry)
+		let registry = try ToolRegistry([EchoTool()])
+		let session = Session(transport: recorder.transport, toolRegistry: registry)
 
-		try await conversation.receive(serverEvent: .conversationItemAdded(
+		try await session.receive(serverEvent: .conversationItemAdded(
 			eventId: "event_added",
 			item: .functionCall(.init(
 				id: "fc_1",
@@ -983,7 +1225,7 @@ struct ConversationGATests {
 			previousItemId: nil
 		))
 
-		try await conversation.receive(serverEvent: .responseFunctionCallArgumentsDone(
+		try await session.receive(serverEvent: .responseFunctionCallArgumentsDone(
 			eventId: "event_done",
 			responseId: "resp_1",
 			itemId: "fc_1",
@@ -1013,7 +1255,7 @@ struct ConversationGATests {
 	@Test
 	func generableArgumentsSynthesizeSchemaAndTypedOutputEncoding() async throws {
 		let tool = FindContactsTool()
-		let expectedSchema: JSONSchema = .object(
+		let expectedSchema: GenerationSchema = .object(
 			properties: [
 				"count": .integer(minimum: 1, maximum: 10, description: "The number of contacts to get"),
 				"query": .string(description: "Optional search text"),
@@ -1021,9 +1263,9 @@ struct ConversationGATests {
 			required: ["count"]
 		)
 
-		#expect(tool.parametersSchema == expectedSchema)
+		#expect(tool.parameters == expectedSchema)
 
-		let registry = ToolRegistry([tool])
+		let registry = try ToolRegistry([tool])
 		let output = try await registry.handle(
 			name: "findContacts",
 			callId: "call_1",
@@ -1034,38 +1276,82 @@ struct ConversationGATests {
 	}
 
 	@Test
+	func functionToolDefaultsNameFromType() {
+		#expect(WeatherLookupTool().name == "weatherLookup")
+	}
+
+	@Test
+	func toolRegistryRejectsDuplicateToolNames() {
+		#expect(throws: ToolRegistry.Error.self) {
+			try ToolRegistry([EchoTool(), EchoTool()])
+		}
+	}
+
+	@Test
 	func generableSupportsFullGuideConstraintSurface() {
 		let tool = SearchDirectoryTool()
-		let expectedSchema: JSONSchema = .object(
+		#expect(SearchDirectoryTool.Arguments.representNilExplicitlyInGeneratedContent)
+		let expectedSchema: GenerationSchema = .object(
 			properties: [
 				"prefix": .string(pattern: "^[A-Za-z]+$", minLength: 2, maxLength: 24, description: "Name prefix to search"),
 				"email": .string(format: .email, description: "Optional contact email"),
 				"score": .number(minimum: 0.25, maximum: 0.75, description: "Minimum match score"),
-				"tags": .array(of: .string(), minItems: 1, maxItems: 3, description: "Tags to include"),
-				"aliases": .array(of: .string(), minItems: 1, maxItems: 5, description: "Aliases to include"),
-				"kind": .enum(cases: ["family", "friend"]),
-				"filters": .object(
+					"tags": .array(of: .string(pattern: "^[A-Za-z]+$"), minItems: 1, maxItems: 3, description: "Tags to include"),
+					"aliases": .array(of: .string(), minItems: 1, maxItems: 5, description: "Aliases to include"),
+					"kind": .enum(cases: ["family", "friend"]),
+					"category": .enum(cases: ["family", "friend"], description: "Directory category"),
+					"filters": .object(
 					properties: [
 						"city": .string(description: "City filter"),
 					],
 					required: ["city"]
 				),
 			],
-			required: ["prefix", "score", "tags", "kind"],
-			description: "Search directory contacts"
+				required: ["prefix", "score", "tags", "kind"],
+				description: "Search directory contacts"
+			)
+
+		#expect(tool.parameters == expectedSchema)
+	}
+
+	@Test
+	func generablePromptRepresentationIncludesExplicitNullsWhenConfigured() {
+		let arguments = SearchDirectoryTool.Arguments(
+			prefix: "Ada",
+			email: nil,
+			score: 0.5,
+			tags: ["friend"],
+			aliases: nil,
+			kind: .family,
+			category: nil,
+			filters: nil
 		)
 
-		#expect(tool.parametersSchema == expectedSchema)
+		let prompt = arguments.promptRepresentation.text
+
+		#expect(prompt.contains(#""email":null"#))
+		#expect(prompt.contains(#""aliases":null"#))
+		#expect(prompt.contains(#""category":null"#))
+		#expect(prompt.contains(#""filters":null"#))
+	}
+
+	@Test
+	func generablePromptRepresentationOmitsNullsByDefault() {
+		let arguments = FindContactsTool.Arguments(count: 2, query: nil)
+		let prompt = arguments.promptRepresentation.text
+
+		#expect(prompt.contains(#""count":2"#))
+		#expect(prompt.contains(#""query""#) == false)
 	}
 
 	@Test
 	func describedPreservesNumericBounds() {
 		#expect(
-			JSONSchema.number(minimum: 0.25, maximum: 0.75)
+			GenerationSchema.number(minimum: 0.25, maximum: 0.75)
 				.described("Score") == .number(minimum: 0.25, maximum: 0.75, description: "Score")
 		)
 		#expect(
-			JSONSchema.integer(minimum: 1, maximum: 10)
+			GenerationSchema.integer(minimum: 1, maximum: 10)
 				.described("Count") == .integer(minimum: 1, maximum: 10, description: "Count")
 		)
 	}
@@ -1073,11 +1359,11 @@ struct ConversationGATests {
 	@Test
 	func streamedEventsInvalidateObservationTracking() async throws {
 		let recorder = TransportRecorder()
-		let conversation = Conversation(transport: recorder.transport)
+		let session = Session(transport: recorder.transport)
 		let (changes, continuation) = AsyncStream.makeStream(of: Void.self)
 
 		withObservationTracking {
-			_ = conversation.isUserSpeaking
+			_ = session.isUserSpeaking
 		} onChange: {
 			continuation.yield()
 			continuation.finish()
@@ -1093,17 +1379,17 @@ struct ConversationGATests {
 		let observedChange: Void? = await iterator.next()
 
 		#expect(observedChange != nil)
-		#expect(conversation.isUserSpeaking)
+		#expect(session.isUserSpeaking)
 	}
 
 	@Test
 	func streamedStatusUpdatesInvalidateObservationTracking() async throws {
 		let recorder = TransportRecorder(status: .disconnected)
-		let conversation = Conversation(transport: recorder.transport)
+		let session = Session(transport: recorder.transport)
 		let (changes, continuation) = AsyncStream.makeStream(of: Void.self)
 
 		withObservationTracking {
-			_ = conversation.status
+			_ = session.status
 		} onChange: {
 			continuation.yield()
 			continuation.finish()
@@ -1115,21 +1401,21 @@ struct ConversationGATests {
 		let observedChange: Void? = await iterator.next()
 
 		#expect(observedChange != nil)
-		#expect(conversation.status == .connected)
+		#expect(session.status == .connected)
 	}
 
 	@Test
 	func updatesStreamEmitsInitialAndChangedSnapshots() async throws {
 		let recorder = TransportRecorder(status: .disconnected)
-		let conversation = Conversation(transport: recorder.transport)
-		var iterator = conversation.updates.makeAsyncIterator()
+		let session = Session(transport: recorder.transport)
+		var iterator = session.updates.makeAsyncIterator()
 
 		let initial = await iterator.next()
 		#expect(initial?.status == .disconnected)
 		#expect(initial?.isUserSpeaking == false)
 
 		recorder.yield(status: .connected)
-		try await conversation.receive(serverEvent: .inputAudioBufferSpeechStarted(
+		try await session.receive(serverEvent: .inputAudioBufferSpeechStarted(
 			eventId: "event_speech_started",
 			itemId: "item_1",
 			audioStartMs: 0
@@ -1222,6 +1508,7 @@ private func decodeValue<T: Decodable>(_ type: T.Type, from json: String) throws
 private final class TransportRecorder: @unchecked Sendable {
 	private final class Storage: @unchecked Sendable {
 		var sentEvents: [ClientEvent] = []
+		var connectRequests: [URLRequest] = []
 	}
 
 	private let storage: Storage
@@ -1230,8 +1517,11 @@ private final class TransportRecorder: @unchecked Sendable {
 	var sentEvents: [ClientEvent] {
 		storage.sentEvents
 	}
+	var connectRequests: [URLRequest] {
+		storage.connectRequests
+	}
 
-	let transport: Conversation.Transport
+	let transport: Session.Transport
 
 	init(status: RealtimeAPI.Status = .connected) {
 		let (events, continuation) = AsyncThrowingStream.makeStream(of: ServerEvent.self)
@@ -1242,11 +1532,13 @@ private final class TransportRecorder: @unchecked Sendable {
 		self.continuation = continuation
 		self.statusContinuation = statusContinuation
 
-		transport = Conversation.Transport(
+		transport = Session.Transport(
 			events: events,
 			statusUpdates: statusUpdates,
 			status: { status },
-			connect: { _ in },
+			connect: { request in
+				storage.connectRequests.append(request)
+			},
 			send: { event in
 				storage.sentEvents.append(event)
 			},
@@ -1264,14 +1556,13 @@ private final class TransportRecorder: @unchecked Sendable {
 	}
 }
 
-private struct EchoTool: Tool {
+	private struct EchoTool: FunctionTool {
 	@Generable
 	struct Arguments: Codable, Sendable {
 		@Guide(description: "The value to echo.")
 		let value: String
 	}
 
-	let name = "echo"
 	let description = "Echoes the provided value."
 
 	func call(arguments: Arguments) async throws -> String {
@@ -1279,7 +1570,7 @@ private struct EchoTool: Tool {
 	}
 }
 
-private struct FindContactsTool: Tool {
+	private struct FindContactsTool: FunctionTool {
 	@Generable
 	struct Arguments: Codable, Sendable {
 		@Guide(description: "The number of contacts to get", .range(1...10))
@@ -1289,7 +1580,6 @@ private struct FindContactsTool: Tool {
 		let query: String?
 	}
 
-	let name = "findContacts"
 	let description = "Find a specific number of contacts"
 
 	func call(arguments _: Arguments) async throws -> [String] {
@@ -1297,9 +1587,9 @@ private struct FindContactsTool: Tool {
 	}
 }
 
-private struct SearchDirectoryTool: Tool {
-	@Generable(description: "Search directory contacts")
-	struct Arguments: Codable, Sendable {
+	private struct SearchDirectoryTool: FunctionTool {
+		@Generable(description: "Search directory contacts", representNilExplicitlyInGeneratedContent: true)
+		struct Arguments: Codable, Sendable {
 		@Guide(description: "Name prefix to search", .pattern("^[A-Za-z]+$"), .length(2...24))
 		let prefix: String
 
@@ -1309,13 +1599,15 @@ private struct SearchDirectoryTool: Tool {
 		@Guide(description: "Minimum match score", .minimum(0.25), .maximum(0.75))
 		let score: Double
 
-		@Guide(description: "Tags to include", .count(1...3))
-		let tags: [String]
+			@Guide(description: "Tags to include", .count(1...3), .element(.pattern(/^[A-Za-z]+$/)))
+			let tags: [String]
 
 		@Guide(description: "Aliases to include", .minimumCount(1), .maximumCount(5))
 		let aliases: [String]?
 
-		let kind: ContactKind
+			let kind: ContactKind
+			@Guide(description: "Directory category", .anyOf(["family", "friend"]))
+			let category: String?
 		let filters: Filters?
 	}
 
@@ -1331,11 +1623,24 @@ private struct SearchDirectoryTool: Tool {
 		let city: String
 	}
 
-	let name = "searchDirectory"
 	let description = "Searches directory contacts."
 
 	func call(arguments _: Arguments) async throws -> [String] {
 		["Ada Lovelace"]
+	}
+}
+
+	private struct WeatherLookupTool: FunctionTool {
+	@Generable
+	struct Arguments: Codable, Sendable {
+		@Guide(description: "City name")
+		let city: String
+	}
+
+	let description = "Looks up weather for a city."
+
+	func call(arguments: Arguments) async throws -> String {
+		arguments.city
 	}
 }
 

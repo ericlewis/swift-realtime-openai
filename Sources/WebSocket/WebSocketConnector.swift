@@ -4,10 +4,10 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public final class WebSocketConnector: NSObject, Connector, Sendable {
-	public let events: AsyncThrowingStream<ServerEvent, Error>
-	public let statusUpdates: AsyncStream<RealtimeAPI.Status>
-	@MainActor public private(set) var status = RealtimeAPI.Status.connecting
+public final class WebSocketConnector: NSObject, RealtimeConnector, Sendable {
+	package let events: AsyncThrowingStream<ServerEvent, Error>
+	package let statusUpdates: AsyncStream<RealtimeAPI.Status>
+	@MainActor package private(set) var status = RealtimeAPI.Status.connecting
 
 	private let task: Task<Void, Never>
 	private let webSocket: URLSessionWebSocketTask
@@ -74,16 +74,16 @@ public final class WebSocketConnector: NSObject, Connector, Sendable {
 		self.disconnect()
 	}
 
-	public static func create(connectingTo request: URLRequest) async throws -> WebSocketConnector {
+	package static func create(connectingTo request: URLRequest) async throws -> WebSocketConnector {
 		return self.init(connectingTo: request)
 	}
 
-	public func send(event: ClientEvent) async throws {
+	package func send(event: ClientEvent) async throws {
 		let message = try URLSessionWebSocketTask.Message.string(String(data: encoder.encode(event), encoding: .utf8)!)
 		try await webSocket.send(message)
 	}
 
-	public func disconnect() {
+	package func disconnect() {
 		statusStream.yield(.disconnected)
 		statusStream.finish()
 		webSocket.cancel(with: .goingAway, reason: nil)

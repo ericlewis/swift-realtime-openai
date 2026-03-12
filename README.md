@@ -1,6 +1,6 @@
 # RealtimeAPI
 
-A Swift SDK for OpenAI's GA Realtime API, with both a low-level event surface and a higher-level `Conversation` wrapper for speech and multimodal sessions.
+A Swift SDK for OpenAI's GA Realtime API centered on the high-level `Session` runtime, `SessionConfiguration`, the session DSL, tool authoring, and `serverEvents` as an advanced read-only observation surface.
 
 ## Installation
 
@@ -12,11 +12,17 @@ dependencies: [
 ]
 ```
 
+## Documentation
+
+The package includes an in-source DocC catalog at [`Sources/RealtimeAPI/RealtimeAPI.docc`](/Users/ericlewis/Developer/swift-realtime-openai/Sources/RealtimeAPI/RealtimeAPI.docc). It covers the runtime model, session configuration, the DSL, tool authoring, and advanced observation/debugging. Use it as the deeper reference surface when browsing the package locally in Xcode or directly in the repo.
+
 ## Quick Start
 
-### High-level conversation API
+### High-level session API
 
-Create a GA client secret on your server with `POST /v1/realtime/client_secrets`, then connect with `Conversation.connect(clientSecret:)`.
+Create a GA client secret on your server with `POST /v1/realtime/client_secrets`, then connect with `Session.connect(clientSecret:)`.
+
+`Session` is the main runtime surface. It defaults to WebRTC, and you can opt into WebSocket explicitly with `Session(using: .webSocket)`.
 
 You can mint that secret directly with the SDK:
 
@@ -25,7 +31,7 @@ import RealtimeAPI
 
 let clientSecret = try await RealtimeAPI.createClientSecret(
 	apiKey: "<server-api-key>",
-	session: .realtime(.init(
+	configuration: .realtime(.init(
 		model: .gptRealtime,
 		instructions: "You are a friendly assistant."
 	)),
@@ -38,14 +44,15 @@ import RealtimeAPI
 import SwiftUI
 
 struct ContentView: View {
-	@State private var conversation = Conversation()
+	@State private var session = Session()
 	@State private var draft = ""
+	@State private var errorMessage: String?
 
 	var body: some View {
 		VStack {
 			ScrollView {
 				LazyVStack(alignment: .leading, spacing: 12) {
-					ForEach(conversation.messages, id: \.id) { message in
+					ForEach(session.messages, id: \.id) { message in
 						Text(message.content.compactMap(\.text).joined(separator: "\n"))
 					}
 				}
@@ -59,79 +66,181 @@ struct ContentView: View {
 			.padding()
 		}
 		.task {
+			for await failure in session.failures {
+				errorMessage = String(describing: failure)
+			}
+		}
+		.task {
 			do {
-				try await conversation.connect(clientSecret: "<client-secret>")
+				try await session.connect(clientSecret: "<client-secret>")
 			} catch {
-				print("Realtime connect failed:", error)
+				errorMessage = String(describing: error)
 			}
 		}
 	}
 
 	private func sendMessage() {
 		guard !draft.isEmpty else { return }
-		try? conversation.send(from: .user, text: draft)
+		let text = draft
 		draft = ""
+
+		Task {
+			do {
+				try await session.send(from: .user, text: text)
+			} catch {
+				errorMessage = String(describing: error)
+			}
+		}
 	}
 }
 ```
 
 ### Session configuration
 
-`Conversation` is GA-first and works with `Session.Realtime`.
+`Session` is GA-first and works with `SessionConfiguration.Realtime`.
+
+The startup `configuring:` callback transforms the full `SessionConfiguration`, so it can also adjust transcription sessions when you need symmetry across both session kinds.
 
 ```swift
-try await conversation.whenConnected {
-	try conversation.updateSession { session in
-		session.instructions = "You are a concise assistant."
-		session.outputModalities = [.audio]
-		session.audio = .init(
+let session = Session(configuring: { configuration in
+	switch configuration {
+		case var .realtime(realtime):
+			realtime.instructions = "You are a concise assistant."
+			return .realtime(realtime)
+		case .transcription:
+			return configuration
+	}
+})
+```
+
+If you need raw server visibility for debugging or custom instrumentation, `Session` also exposes a read-only `serverEvents` stream while keeping raw client event sending internal.
+
+```swift
+try await session.whenConnected {
+	try await session.updateConfiguration { configuration in
+		var updated = configuration
+		updated.instructions = "You are a concise assistant."
+		updated.outputModalities = [.audio]
+		updated.audio = .init(
 			output: .init(voice: .marin)
 		)
+		return updated
 	}
 }
 ```
 
-### Direct WebRTC connection
+### WebSocket sessions
 
-Use the GA client-secret flow when connecting directly to WebRTC:
-
-```swift
-import RealtimeAPI
-
-let api = try await RealtimeAPI.webRTC(clientSecret: "<client-secret>")
-```
-
-### Direct WebSocket connection
-
-The WebSocket helpers support the unified GA flow with either a client secret or a bearer token:
+If you want the high-level runtime over WebSocket instead of WebRTC:
 
 ```swift
 import RealtimeAPI
 
-let api = RealtimeAPI.webSocket(clientSecret: "<client-secret>")
-let serverSideAPI = RealtimeAPI.webSocket(authToken: "<api-key>")
+let session = Session(using: .webSocket)
+try await session.connect(authToken: "<api-key>")
 ```
 
-Send GA-shaped events through the low-level API:
+### Session DSL
+
+You can also build realtime sessions with the result-builder DSL:
 
 ```swift
-try await api.send(event: .updateSession(.realtime(.init(
-	model: .gptRealtime,
-	instructions: "Be helpful.",
-	audio: .init(output: .init(voice: .marin))
-))))
+import RealtimeAPI
 
-for try await event in api.events {
-	switch event {
-		case let .responseOutputTextDelta(_, _, _, _, _, delta):
-			print(delta)
-		case let .responseOutputAudioTranscriptDelta(_, _, _, _, _, delta):
-			print(delta)
-		default:
-			break
+let configuration = try SessionConfiguration(.gptRealtime) {
+	Instructions("cosmos_glasses", version: 2) {
+		Variables([
+			"location": "office",
+			"mode": "focused",
+		])
+	}
+
+	Response(.audio) {
+		MaxTokens(.max)
+		Truncation(.auto)
+	}
+	.include(.field(.inputAudioTranscriptionLogProbs))
+
+	Tracing {
+		Workflow("cosmos")
+		Group("workday-session")
+		Metadata([
+			"surface": "glasses",
+			"environment": "prod",
+		])
+	}
+
+	AudioInput(.pcm) {
+		NoiseReduction(.nearField)
+
+		Transcription(.gpt4oTranscribe) {
+			Language(.english)
+			Prompt("Workplace vocabulary, project names, colleague names")
+		}
+
+		TurnDetection {
+			Semantic(interrupts: false, responds: true) {
+				Eagerness(.auto)
+			}
+		}
+	}
+
+	AudioOutput(.pcm) {
+		Voice(.marin).speed(1.1)
+	}
+
+	Tools(choice: .auto) {
+		FindContactsTool()
+
+		GoogleDriveConnector {
+			ToolPolicies(.allowAll)
+		}
 	}
 }
 ```
+
+One naming note:
+
+- `Tool("...")` inside `ToolPolicies` defines MCP tool policies, while `FunctionTool` is the executable tool-authoring protocol.
+
+You can also reuse instruction and prompt values in a style closer to Foundation Models:
+
+```swift
+import RealtimeAPI
+
+let system = Instructions {
+	"You are Cosmos speaking through smart glasses."
+	Prompt {
+		"Keep responses concise."
+		"Be natural."
+	}
+}
+
+let transcriptionPrompt = Prompt {
+	"Workplace vocabulary"
+	"Project names"
+	"Colleague names"
+}
+
+let configuration = try SessionConfiguration(.gptRealtime) {
+	system
+
+	Response(.audio) {
+		MaxTokens(400)
+	}
+
+	AudioInput(.pcm) {
+		Transcription(.gpt4oTranscribe) {
+			Language(.english)
+			transcriptionPrompt
+		}
+	}
+}
+```
+
+Custom types can participate by conforming to `InstructionsRepresentable` or `PromptRepresentable`.
+
+The package still contains lower-level transport and event primitives, but they are intentionally secondary to the `Session` runtime and are not the recommended starting point.
 
 ## Tool Authoring
 
@@ -140,12 +249,12 @@ The SDK supports typed tool authoring with `@Generable` arguments and `@Guide` f
 ```swift
 import RealtimeAPI
 
-struct FindContacts: Tool {
+struct FindContacts: FunctionTool {
 	let name = "findContacts"
 	let description = "Find a specific number of contacts."
 
-	@Generable(description: "Search parameters for a contact lookup.")
-	struct Arguments: Codable, Sendable {
+	@Generable(description: "Search parameters for a contact lookup.", representNilExplicitlyInGeneratedContent: true)
+	struct Arguments: Generable {
 		@Guide(description: "The number of contacts to get.", .range(1...10))
 		let count: Int
 
@@ -165,11 +274,18 @@ struct FindContacts: Tool {
 }
 ```
 
+Public authoring protocols now mirror the Foundation Models split:
+
+- `GenerationSchema` is the public schema name
+- `ConvertibleFromGeneratedContent` is the input-side decoding protocol
+- `ConvertibleToGeneratedContent` is the prompt/instructions-side encoding protocol
+- `Generable` inherits both and synthesizes `generationSchema`
+
 Supported `@Guide` constraints:
 
 - numeric: `.minimum`, `.maximum`, `.range`
 - arrays: `.count`, `.minimumCount`, `.maximumCount`
-- strings: `.pattern`, `.format`, `.length`, `.minimumLength`, `.maximumLength`
+- strings: `.pattern`, `.format`, `.length`, `.minimumLength`, `.maximumLength`, `.constant`, `.anyOf`
 
 `ToolRegistry` will JSON-encode non-`String` tool outputs automatically before sending them back as `function_call_output` items.
 
@@ -177,7 +293,7 @@ The macros also emit compile-time diagnostics for invalid combinations such as `
 
 At the API level:
 
-- `Tool` is the authoring protocol for executable tools
+- `FunctionTool` is the authoring protocol for executable tools
 - `ToolDefinition` is the GA wire-model payload used in sessions and responses
 - `ToolChoice` models GA tool-selection behavior
 
@@ -185,10 +301,21 @@ At the API level:
 
 ### `Session`
 
-`Session` is a tagged GA union:
+`Session` is the high-level connected runtime. It owns:
 
-- `Session.realtime(Session.Realtime)`
-- `Session.transcription(Session.Transcription)`
+- connection state
+- `configuration`
+- `conversationID`
+- `entries`
+- `messages`
+- async `updates`
+
+### `SessionConfiguration`
+
+`SessionConfiguration` is a tagged GA union:
+
+- `SessionConfiguration.realtime(SessionConfiguration.Realtime)`
+- `SessionConfiguration.transcription(SessionConfiguration.Transcription)`
 
 Realtime session fields follow the GA wire shape:
 
@@ -200,9 +327,9 @@ Realtime session fields follow the GA wire shape:
 - `tracing`
 - `truncation`
 
-### `Response.Config`
+### `ResponseDTO.Config`
 
-`Response.Config` matches GA `response.create` payloads, including:
+`ResponseDTO.Config` matches GA `response.create` payloads, including:
 
 - nested audio config
 - `conversation`
@@ -210,12 +337,12 @@ Realtime session fields follow the GA wire shape:
 - `outputModalities`
 - `toolChoice`
 - `tools`
-- `input: [Response.InputItem]`
+- `input: [ResponseDTO.InputItem]`
 
-For out-of-band responses, use `Response.InputItem.itemReference(id:)`:
+For out-of-band responses, use `ResponseDTO.InputItem.itemReference(id:)`:
 
 ```swift
-let response = Response.Config(
+let response = ResponseDTO.Config(
 	conversation: .none,
 	outputModalities: [.text],
 	input: [

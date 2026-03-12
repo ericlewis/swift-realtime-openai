@@ -1,3 +1,4 @@
+/// Built-in model identifiers supported by the Realtime SDK surface.
 public enum Model: RawRepresentable, Equatable, Hashable, Codable, Sendable {
 	case gptRealtime
 	case gptRealtime1_5
@@ -63,6 +64,7 @@ public enum Model: RawRepresentable, Equatable, Hashable, Codable, Sendable {
 }
 
 public extension Model {
+	/// Built-in transcription model identifiers used by audio transcription and transcription sessions.
 	enum Transcription: RawRepresentable, Equatable, Hashable, Codable, Sendable {
 		case whisper1
 		case gpt4oTranscribeLatest

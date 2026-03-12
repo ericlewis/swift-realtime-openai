@@ -1,3 +1,4 @@
+/// A server-originated error payload emitted over the Realtime protocol.
 public struct ServerError: Codable, Equatable, Sendable {
 	/// The type of error (e.g., "invalid_request_error", "server_error").
 	public let type: String

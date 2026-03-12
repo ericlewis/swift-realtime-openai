@@ -1,4 +1,6 @@
-public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
+/// The server-side response resource emitted by the Realtime API.
+public struct ResponseDTO: Identifiable, Equatable, Hashable, Codable, Sendable {
+	/// Configuration used when creating or customizing a response.
 	public struct Config: Equatable, Hashable, Codable, Sendable {
 		public enum Conversation: String, Equatable, Hashable, Codable, Sendable {
 			case auto
@@ -6,9 +8,9 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 		}
 
 		public struct Audio: Equatable, Hashable, Codable, Sendable {
-			public var output: Session.AudioOutput?
+			public var output: SessionConfiguration.AudioOutput?
 
-			public init(output: Session.AudioOutput? = nil) {
+			public init(output: SessionConfiguration.AudioOutput? = nil) {
 				self.output = output
 			}
 		}
@@ -17,10 +19,10 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 		public var conversation: Conversation?
 		public var input: [InputItem]?
 		public var instructions: String?
-		public var maxOutputTokens: Session.MaxOutputTokens?
+		public var maxOutputTokens: SessionConfiguration.MaxOutputTokens?
 		public var metadata: [String: String]?
-		public var outputModalities: [Session.OutputModality]?
-		public var prompt: Session.Prompt?
+		public var outputModalities: [SessionConfiguration.OutputModality]?
+		public var prompt: SessionConfiguration.Prompt?
 		public var temperature: Double?
 		public var toolChoice: ToolChoice?
 		public var tools: [ToolDefinition]?
@@ -30,10 +32,10 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 			conversation: Conversation? = nil,
 			input: [InputItem]? = nil,
 			instructions: String? = nil,
-			maxOutputTokens: Session.MaxOutputTokens? = nil,
+			maxOutputTokens: SessionConfiguration.MaxOutputTokens? = nil,
 			metadata: [String: String]? = nil,
-			outputModalities: [Session.OutputModality]? = nil,
-			prompt: Session.Prompt? = nil,
+			outputModalities: [SessionConfiguration.OutputModality]? = nil,
+			prompt: SessionConfiguration.Prompt? = nil,
 			temperature: Double? = nil,
 			toolChoice: ToolChoice? = nil,
 			tools: [ToolDefinition]? = nil
@@ -143,6 +145,32 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 		case inProgress = "in_progress"
 	}
 
+	public struct StatusError: Equatable, Hashable, Codable, Sendable {
+		public let code: String?
+		public let type: String?
+
+		public init(code: String? = nil, type: String? = nil) {
+			self.code = code
+			self.type = type
+		}
+	}
+
+	public enum StatusReason: Equatable, Hashable, Sendable {
+		case turnDetected
+		case clientCancelled
+		case maxOutputTokens
+		case contentFilter
+		case other(String)
+	}
+
+	public enum StatusDetails: Equatable, Hashable, Sendable {
+		case completed
+		case cancelled(reason: StatusReason?)
+		case incomplete(reason: StatusReason?)
+		case failed(error: StatusError?)
+		case other(type: String?, reason: StatusReason?, error: StatusError?)
+	}
+
 	public enum Usage: Equatable, Hashable, Sendable {
 		public struct TokenUsage: Equatable, Hashable, Codable, Sendable {
 			public struct InputTokenDetails: Equatable, Hashable, Codable, Sendable {
@@ -218,7 +246,7 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 	public let object: String?
 	public let output: [Item]
 	public let status: Status
-	public let statusDetails: JSONValue?
+	public let statusDetails: StatusDetails?
 	public let usage: Usage?
 
 	public init(
@@ -228,7 +256,7 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 		object: String? = nil,
 		output: [Item],
 		status: Status,
-		statusDetails: JSONValue? = nil,
+		statusDetails: StatusDetails? = nil,
 		usage: Usage? = nil
 	) {
 		self.conversationId = conversationId
@@ -242,7 +270,94 @@ public struct Response: Identifiable, Equatable, Hashable, Codable, Sendable {
 	}
 }
 
-extension Response.InputItem: Codable {
+extension ResponseDTO.StatusReason: Codable {
+	public init(from decoder: any Decoder) throws {
+		let container = try decoder.singleValueContainer()
+		let value = try container.decode(String.self)
+
+		switch value {
+			case "turn_detected":
+				self = .turnDetected
+			case "client_cancelled":
+				self = .clientCancelled
+			case "max_output_tokens":
+				self = .maxOutputTokens
+			case "content_filter":
+				self = .contentFilter
+			default:
+				self = .other(value)
+		}
+	}
+
+	public func encode(to encoder: any Encoder) throws {
+		var container = encoder.singleValueContainer()
+
+		switch self {
+			case .turnDetected:
+				try container.encode("turn_detected")
+			case .clientCancelled:
+				try container.encode("client_cancelled")
+			case .maxOutputTokens:
+				try container.encode("max_output_tokens")
+			case .contentFilter:
+				try container.encode("content_filter")
+			case let .other(value):
+				try container.encode(value)
+		}
+	}
+}
+
+extension ResponseDTO.StatusDetails: Codable {
+	private enum CodingKeys: String, CodingKey {
+		case error
+		case reason
+		case type
+	}
+
+	public init(from decoder: any Decoder) throws {
+		let container = try decoder.container(keyedBy: CodingKeys.self)
+		let type = try container.decodeIfPresent(String.self, forKey: .type)
+		let reason = try container.decodeIfPresent(ResponseDTO.StatusReason.self, forKey: .reason)
+		let error = try container.decodeIfPresent(ResponseDTO.StatusError.self, forKey: .error)
+
+		switch type {
+			case "completed":
+				self = .completed
+			case "cancelled":
+				self = .cancelled(reason: reason)
+			case "incomplete":
+				self = .incomplete(reason: reason)
+			case "failed":
+				self = .failed(error: error)
+			default:
+				self = .other(type: type, reason: reason, error: error)
+		}
+	}
+
+	public func encode(to encoder: any Encoder) throws {
+		var container = encoder.container(keyedBy: CodingKeys.self)
+
+		switch self {
+			case .completed:
+				try container.encode("completed", forKey: .type)
+			case let .cancelled(reason):
+				try container.encode("cancelled", forKey: .type)
+				try container.encodeIfPresent(reason, forKey: .reason)
+			case let .incomplete(reason):
+				try container.encode("incomplete", forKey: .type)
+				try container.encodeIfPresent(reason, forKey: .reason)
+			case let .failed(error):
+				try container.encode("failed", forKey: .type)
+				try container.encodeIfPresent(error, forKey: .error)
+			case let .other(type, reason, error):
+				try container.encodeIfPresent(type, forKey: .type)
+				try container.encodeIfPresent(reason, forKey: .reason)
+				try container.encodeIfPresent(error, forKey: .error)
+		}
+	}
+}
+
+extension ResponseDTO.InputItem: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case id
 		case type
@@ -286,7 +401,7 @@ extension Response.InputItem: Codable {
 	}
 }
 
-extension Response.InputItem.Message.Content: Codable {
+extension ResponseDTO.InputItem.Message.Content: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case audio
 		case detail
@@ -345,7 +460,7 @@ extension Response.InputItem.Message.Content: Codable {
 	}
 }
 
-extension Response.ContentPart: Codable {
+extension ResponseDTO.ContentPart: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case audio
 		case text
@@ -382,7 +497,7 @@ extension Response.ContentPart: Codable {
 	}
 }
 
-extension Response.Usage: Codable {
+extension ResponseDTO.Usage: Codable {
 	private enum CodingKeys: String, CodingKey {
 		case type
 	}

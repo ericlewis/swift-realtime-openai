@@ -10,13 +10,13 @@ public extension RealtimeAPI {
 
 	static func createClientSecret(
 		apiKey: String,
-		session: Session? = nil,
+		configuration: SessionConfiguration? = nil,
 		expiresAfter: RealtimeClientSecret.ExpiresAfter? = nil,
 		using urlSession: URLSession = .shared
 	) async throws -> RealtimeClientSecret {
 		try await createClientSecret(
 			apiKey: apiKey,
-			request: .init(expiresAfter: expiresAfter, session: session),
+			request: .init(expiresAfter: expiresAfter, configuration: configuration),
 			using: urlSession
 		)
 	}

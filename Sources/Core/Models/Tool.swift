@@ -1,34 +1,56 @@
 import Foundation
 
-// MARK: - Tool Protocol
+// MARK: - Function Tool Protocol
 
-public protocol Tool<Arguments>: Sendable {
-	associatedtype Arguments: Decodable & Sendable
-	associatedtype Output: Encodable & Sendable
+/// Defines a locally implemented tool that can be advertised to and called by the model.
+public protocol FunctionTool<Arguments>: Sendable {
+	associatedtype Arguments: ConvertibleFromGeneratedContent
+	associatedtype Output: PromptRepresentable
 
 	var name: String { get }
 	var description: String { get }
-	var parametersSchema: JSONSchema { get }
+	var parameters: GenerationSchema { get }
 
 	func call(arguments: Arguments) async throws -> Output
 }
 
-public extension Tool {
+public extension FunctionTool {
+	/// The default tool name derived from the concrete type name.
+	var name: String {
+		_defaultToolName(for: Self.self)
+	}
+
 	var definition: ToolDefinition {
-		.function(.init(name: name, description: description, parameters: parametersSchema))
+		.function(.init(name: name, description: description, parameters: parameters))
 	}
 }
 
-public extension Tool where Arguments: Generable {
-	var parametersSchema: JSONSchema {
+func _defaultToolName<T>(for type: T.Type) -> String {
+	let rawName = String(describing: type)
+	let baseName: String
+
+	if rawName.hasSuffix("Tool"), rawName.count > 4 {
+		baseName = String(rawName.dropLast(4))
+	} else {
+		baseName = rawName
+	}
+
+	guard let first = baseName.first else { return baseName }
+	return first.lowercased() + baseName.dropFirst()
+}
+
+public extension FunctionTool where Arguments: Generable {
+	var parameters: GenerationSchema {
 		Arguments.generationSchema
 	}
 }
 
 // MARK: - ToolRegistry
 
+/// Registers local tools and dispatches model tool calls to their implementations.
 public struct ToolRegistry: Sendable {
 	public enum Error: Swift.Error {
+		case duplicateToolName(String)
 		case unknownTool(String)
 		case invalidArguments(String, underlying: Swift.Error)
 	}
@@ -37,11 +59,14 @@ public struct ToolRegistry: Sendable {
 
 	public let definitions: [ToolDefinition]
 
-	public init(_ tools: [any Tool]) {
+	public init(_ tools: [any FunctionTool]) throws {
 		var handlers = [String: @Sendable (String) async throws -> String]()
 		var definitions = [ToolDefinition]()
 
 		for tool in tools {
+			guard handlers[tool.name] == nil else {
+				throw Error.duplicateToolName(tool.name)
+			}
 			definitions.append(tool.definition)
 			Self.register(tool, into: &handlers)
 		}
@@ -59,7 +84,7 @@ public struct ToolRegistry: Sendable {
 		return Item.FunctionCallOutput(id: UUID().uuidString, callId: callId, output: output)
 	}
 
-	private static func register<T: Tool>(_ tool: T, into handlers: inout [String: @Sendable (String) async throws -> String]) {
+	private static func register<T: FunctionTool>(_ tool: T, into handlers: inout [String: @Sendable (String) async throws -> String]) {
 		handlers[tool.name] = { arguments in
 			let data = Data(arguments.utf8)
 			let decoded: T.Arguments
@@ -68,26 +93,18 @@ public struct ToolRegistry: Sendable {
 			} catch {
 				throw Error.invalidArguments(tool.name, underlying: error)
 			}
-			return try encodeToolOutput(try await tool.call(arguments: decoded))
+			return encodeToolOutput(try await tool.call(arguments: decoded))
 		}
 	}
 
-	private static func encodeToolOutput<T: Encodable>(_ output: T) throws -> String {
-		if let string = output as? String {
-			return string
-		}
-
-		let data = try JSONEncoder().encode(output)
-		guard let string = String(data: data, encoding: .utf8) else {
-			throw EncodingError.invalidValue(output, .init(codingPath: [], debugDescription: "Unable to encode tool output as UTF-8 string"))
-		}
-
-		return string
+	private static func encodeToolOutput<T: PromptRepresentable>(_ output: T) -> String {
+		output.promptRepresentation.text
 	}
 }
 
 // MARK: - ToolChoice
 
+/// Describes how the model should choose between generating a response and invoking tools.
 public enum ToolChoice: Equatable, Hashable, Sendable {
 	case none
 	case auto
@@ -98,13 +115,14 @@ public enum ToolChoice: Equatable, Hashable, Sendable {
 
 // MARK: - ToolDefinition
 
+/// A tool definition advertised to the Realtime API.
 public enum ToolDefinition: Equatable, Hashable, Sendable {
 	public struct Function: Equatable, Hashable, Codable, Sendable {
 		public var name: String
 		public var description: String?
-		public var parameters: JSONSchema
+		public var parameters: GenerationSchema
 
-		public init(name: String, description: String? = nil, parameters: JSONSchema) {
+		public init(name: String, description: String? = nil, parameters: GenerationSchema) {
 			self.name = name
 			self.description = description
 			self.parameters = parameters
