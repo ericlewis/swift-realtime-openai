@@ -1,5 +1,6 @@
 import Core
 import Foundation
+import OSLog
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -8,6 +9,8 @@ public final class WebSocketConnector: NSObject, RealtimeConnector, Sendable {
 	package let events: AsyncThrowingStream<ServerEvent, Error>
 	package let statusUpdates: AsyncStream<RealtimeAPI.Status>
 	@MainActor package private(set) var status = RealtimeAPI.Status.connecting
+
+	private static let logger = Logger(subsystem: "RealtimeAPI", category: "WebSocketConnector")
 
 	private let task: Task<Void, Never>
 	private let webSocket: URLSessionWebSocketTask
@@ -53,7 +56,13 @@ public final class WebSocketConnector: NSObject, RealtimeConnector, Sendable {
 						continue
 					}
 
-					try stream.yield(decoder.decode(ServerEvent.self, from: data))
+					do {
+						try stream.yield(decoder.decode(ServerEvent.self, from: data))
+					} catch {
+						// OpenAI regularly adds new event types. A single unknown event must not
+						// terminate the voice stream — log and skip instead.
+						Self.logger.warning("Skipping unrecognized server event: \(error, privacy: .public). Payload (truncated): \(String(data: data.prefix(300), encoding: .utf8) ?? "<invalid utf8>", privacy: .public)")
+					}
 				} catch {
 					stream.finish(throwing: error)
 					isActive = false
