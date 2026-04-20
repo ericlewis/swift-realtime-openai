@@ -257,8 +257,9 @@ extension WebRTCConnector: LKRTCDataChannelDelegate {
 	public func dataChannel(_: LKRTCDataChannel, didReceiveMessageWith buffer: LKRTCDataBuffer) {
 		do { try stream.yield(decoder.decode(ServerEvent.self, from: buffer.data)) }
 		catch {
-			Self.logger.error("Failed to decode server event payload: \(String(data: buffer.data, encoding: .utf8) ?? "<invalid utf8>", privacy: .public)")
-			stream.finish(throwing: error)
+			// OpenAI regularly adds new event types. A single unknown event must not
+			// terminate the voice stream — log and skip instead.
+			Self.logger.warning("Skipping unrecognized server event: \(error, privacy: .public). Payload (truncated): \(String(data: buffer.data.prefix(300), encoding: .utf8) ?? "<invalid utf8>", privacy: .public)")
 		}
 	}
 
