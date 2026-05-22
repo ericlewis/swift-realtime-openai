@@ -170,7 +170,11 @@ private extension WebRTCConnector {
 		#if os(tvOS)
 		config.categoryOptions = []
 		#else
-		config.categoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
+		// `.allowBluetooth` was deprecated and renamed to `.allowBluetoothHFP` in
+		// iOS 18.4. Passing the legacy constant on modern iOS causes
+		// setCategory to fail with kAudio_ParamError (-50) and silently strands
+		// audio away from the bluetooth route.
+		config.categoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
 		#endif
 		LKRTCAudioSessionConfiguration.setWebRTC(config)
 
