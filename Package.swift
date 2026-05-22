@@ -7,7 +7,6 @@ let package = Package(
 	name: "RealtimeAPI",
 	platforms: [
 		.iOS(.v17),
-		.tvOS(.v17),
 		.macOS(.v14),
 		.visionOS(.v1),
 		.macCatalyst(.v17),
