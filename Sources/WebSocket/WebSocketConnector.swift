@@ -94,17 +94,13 @@ public final class WebSocketConnector: NSObject, RealtimeConnector, Sendable {
 
 extension WebSocketConnector: URLSessionWebSocketDelegate {
 	public func urlSession(_: URLSession, webSocketTask _: URLSessionWebSocketTask, didOpenWithProtocol _: String?) {
-		Task { @MainActor in
-			status = .connected
-			statusStream.yield(.connected)
-		}
+		statusStream.yield(.connected)
+		Task { @MainActor [weak self] in self?.status = .connected }
 	}
 
 	public func urlSession(_: URLSession, webSocketTask _: URLSessionWebSocketTask, didCloseWith _: URLSessionWebSocketTask.CloseCode, reason _: Data?) {
-		Task { @MainActor in
-			status = .disconnected
-			statusStream.yield(.disconnected)
-			statusStream.finish()
-		}
+		statusStream.yield(.disconnected)
+		statusStream.finish()
+		Task { @MainActor [weak self] in self?.status = .disconnected }
 	}
 }

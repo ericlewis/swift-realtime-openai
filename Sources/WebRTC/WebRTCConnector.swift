@@ -69,7 +69,13 @@ import FoundationNetworking
 	}
 
 	deinit {
-		disconnect()
+		// Don't route through `disconnect()` — its `Task { @MainActor }` would
+		// capture `self` and dereference it after deallocation. Continuations
+		// are `Sendable` and safe to terminate from a nonisolated deinit.
+		connection.close()
+		statusStream.yield(.disconnected)
+		statusStream.finish()
+		stream.finish()
 	}
 
 	package func connect(using request: URLRequest, configuration: SessionConfiguration? = nil) async throws {
@@ -93,11 +99,11 @@ import FoundationNetworking
 	}
 
 	package func disconnect() {
-		Task { @MainActor in
-			status = .disconnected
-			statusStream.yield(.disconnected)
-			statusStream.finish()
+		Task { @MainActor [weak self] in
+			self?.status = .disconnected
 		}
+		statusStream.yield(.disconnected)
+		statusStream.finish()
 		connection.close()
 		stream.finish()
 	}
@@ -154,15 +160,25 @@ private extension WebRTCConnector {
 
 	static func configureAudioSession() {
 		#if !os(macOS)
+		// Route configuration through LKRTCAudioSession — calling setCategory/setMode
+		// directly on AVAudioSession.sharedInstance() is unsafe because WebRTC owns
+		// the audio session and will revert mismatched settings (notably on
+		// background transitions), which is what kills sustained voice chat.
+		let config = LKRTCAudioSessionConfiguration.webRTC()
+		config.category = AVAudioSession.Category.playAndRecord.rawValue
+		config.mode = AVAudioSession.Mode.voiceChat.rawValue
+		#if os(tvOS)
+		config.categoryOptions = []
+		#else
+		config.categoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
+		#endif
+		LKRTCAudioSessionConfiguration.setWebRTC(config)
+
+		let session = LKRTCAudioSession.sharedInstance()
+		session.lockForConfiguration()
+		defer { session.unlockForConfiguration() }
 		do {
-			let audioSession = AVAudioSession.sharedInstance()
-			#if os(tvOS)
-			try audioSession.setCategory(.playAndRecord, options: [])
-			#else
-			try audioSession.setCategory(.playAndRecord, options: [.defaultToSpeaker])
-			#endif
-			try audioSession.setMode(.videoChat)
-			try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+			try session.setConfiguration(config, active: true)
 		} catch {
 			logger.error("Failed to configure AVAudioSession: \(String(describing: error), privacy: .public)")
 		}
@@ -263,17 +279,16 @@ extension WebRTCConnector: LKRTCDataChannelDelegate {
 	}
 
 	public func dataChannelDidChangeState(_ dataChannel: LKRTCDataChannel) {
-		Task { @MainActor [state = dataChannel.readyState] in
-			switch state {
-				case .open:
-					status = .connected
-					statusStream.yield(.connected)
-				case .closing, .closed:
-					status = .disconnected
-					statusStream.yield(.disconnected)
-					statusStream.finish()
-				default: break
-			}
+		let state = dataChannel.readyState
+		switch state {
+			case .open:
+				statusStream.yield(.connected)
+				Task { @MainActor [weak self] in self?.status = .connected }
+			case .closing, .closed:
+				statusStream.yield(.disconnected)
+				statusStream.finish()
+				Task { @MainActor [weak self] in self?.status = .disconnected }
+			default: break
 		}
 	}
 }

@@ -473,9 +473,9 @@ extension ResponseDTO.ContentPart: Codable {
 		let type = try container.decode(String.self, forKey: .type)
 
 		switch type {
-			case "output_text":
+			case "output_text", "text":
 				self = .outputText(try container.decodeIfPresent(String.self, forKey: .text) ?? "")
-			case "output_audio":
+			case "output_audio", "audio":
 				self = .outputAudio(try Item.Audio(from: decoder))
 			default:
 				throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown response content part type: \(type)")
@@ -504,7 +504,8 @@ extension ResponseDTO.Usage: Codable {
 
 	public init(from decoder: any Decoder) throws {
 		let container = try decoder.container(keyedBy: CodingKeys.self)
-		let type = try container.decode(String.self, forKey: .type)
+		// `response.done` omits the `type` discriminator on `usage`; treat as tokens by default.
+		let type = try container.decodeIfPresent(String.self, forKey: .type) ?? "tokens"
 
 		switch type {
 			case "tokens":
