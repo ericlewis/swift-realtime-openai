@@ -86,7 +86,12 @@ public struct ToolRegistry: Sendable {
 
 	private static func register<T: FunctionTool>(_ tool: T, into handlers: inout [String: @Sendable (String) async throws -> String]) {
 		handlers[tool.name] = { arguments in
-			let data = Data(arguments.utf8)
+			// The Realtime API sometimes emits an empty string for tools that
+			// declare no parameters. Coerce to "{}" so JSONDecoder can produce
+			// a fully-defaulted Arguments value.
+			let trimmed = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+			let payload = trimmed.isEmpty ? "{}" : trimmed
+			let data = Data(payload.utf8)
 			let decoded: T.Arguments
 			do {
 				decoded = try JSONDecoder().decode(T.Arguments.self, from: data)
