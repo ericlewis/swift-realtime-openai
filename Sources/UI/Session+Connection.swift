@@ -118,4 +118,14 @@ extension Session {
 			try await send(event: .commitInputAudioBuffer())
 		}
 	}
+
+	/// Stop the model mid-response.
+	///
+	/// Cancels the streaming response and drops any audio the server has already
+	/// queued for playback. Use this when the user wants the assistant to stop
+	/// speaking immediately rather than waiting for the turn to finish.
+	public func interruptResponse(responseId: String? = nil) async throws {
+		try await send(event: .cancelResponse(by: responseId))
+		try await send(event: .outputAudioBufferClear())
+	}
 }
